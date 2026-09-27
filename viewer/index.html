@@ -57,6 +57,24 @@
   .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
   #importInfo { margin-top: 10px; white-space: pre-wrap; }
 
+  /* Place names */
+  .stay-no {
+    display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+    border-radius: 50%; background: var(--stay); color: #fff; font-size: 12px; font-weight: 700;
+  }
+  .unsure {
+    display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 10px; font-size: 12px; font-weight: 700;
+    background: #f59e0b; color: #1b1d21; cursor: pointer; vertical-align: 1px;
+  }
+  .rename { background: none; border: none; min-height: 0; padding: 0 4px; color: var(--muted); cursor: pointer; font-size: 14px; }
+  .rename:hover { color: var(--text); background: none; }
+  .choices { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+  .choices button { text-align: left; display: flex; justify-content: space-between; gap: 10px; }
+  .choices button small { color: var(--muted); white-space: nowrap; }
+  .custom-row { display: flex; gap: 8px; margin-top: 6px; }
+  .custom-row input { flex: 1; min-width: 0; }
+  .muted { color: var(--muted); }
+
   /* Main app */
   #app { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr; height: 100%; }
   header {
@@ -183,6 +201,27 @@
   </div>
 </div>
 
+<!-- 5. Name a place -->
+<div id="placeDlg" class="modal hidden">
+  <div class="form">
+    <h1>Where were you?</h1>
+    <p id="placeWhen"></p>
+    <div id="placeStatus" class="muted"></div>
+    <div class="choices" id="placeChoices"></div>
+    <label for="placeCustom">Or type a name</label>
+    <div class="custom-row">
+      <input id="placeCustom" placeholder="e.g. Home, Mum's house, Manor Park Tennis Club">
+      <button class="primary" id="placeSaveCustom">Save</button>
+    </div>
+    <p class="muted" style="margin-top:10px">The name is remembered: future visits within 100 m get it automatically.</p>
+    <div class="row">
+      <button id="placeForget" class="hidden">Forget this saved name</button>
+      <button id="placeClose">Close</button>
+    </div>
+    <div class="error" id="placeError"></div>
+  </div>
+</div>
+
 <script>
 (() => {
   'use strict';
@@ -282,6 +321,7 @@
 
   $('signOut').addEventListener('click', async () => {
     await sb.auth.signOut();
+    places = []; placesLoaded = false;
     showLogin();
   });
 
@@ -461,6 +501,7 @@
   // ---------- Rendering ----------
   async function loadDay() {
     if (!sb || !$('day').value) return;
+    if (!placesLoaded) await loadPlaces();
     const seq = ++loadSeq;
     const dayStart = fromInputDate($('day').value);
     const dayEnd = addDays(dayStart, 1);
@@ -522,9 +563,8 @@
       if (e.type !== 'stay') continue;
       e.no = ++stayNo;
       const icon = L.divIcon({ className: '', html: `<div class="stay-pin">${e.no}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
-      e.marker = L.marker([e.lat, e.lon], { icon, zIndexOffset: 1000 })
-        .bindPopup(`<b>Stay ${e.no}</b><br>${stayTimes(e)}<br>${fmtDur(e.end - e.start)}`)
-        .addTo(dataLayer);
+      e.marker = L.marker([e.lat, e.lon], { icon, zIndexOffset: 1000 }).addTo(dataLayer);
+      e.place = savedPlaceFor(e.lat, e.lon);
     }
 
     // Totals.
@@ -547,9 +587,14 @@
       const li = document.createElement('li');
       if (e.type === 'stay') {
         li.style.borderLeftColor = css('--stay');
-        li.innerHTML = `<div class="icon">📍</div><div><div class="what">Stay ${e.no} · ${fmtDur(e.end - e.start)}</div>` +
-          `<div class="when">${stayTimes(e)}</div></div>`;
-        li.addEventListener('click', () => { select(li); map.setView([e.lat, e.lon], Math.max(map.getZoom(), 16)); e.marker.openPopup(); });
+        li.innerHTML = `<div class="icon"><span class="stay-no">${e.no}</span></div><div><div class="what"></div>` +
+          `<div class="when">${stayTimes(e)} · ${fmtDur(e.end - e.start)}</div></div>`;
+        e.li = li;
+        li.addEventListener('click', (ev) => {
+          if (ev.target.closest('.unsure, .rename')) { openPlaceDialog(e); return; }
+          select(li); map.setView([e.lat, e.lon], Math.max(map.getZoom(), 16)); e.marker.openPopup();
+        });
+        showStayName(e);
       } else {
         const m = MODES[e.mode];
         li.style.borderLeftColor = css(m.color);
@@ -564,6 +609,7 @@
       list.appendChild(li);
     }
     if (!entries.length) list.innerHTML = '<li class="empty">Not enough points to build a timeline.</li>';
+    guessStayNames(entries.filter((e) => e.type === 'stay'), loadSeq);
 
     const bounds = dataLayer.getBounds();
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 });
@@ -581,6 +627,246 @@
     if (window.matchMedia('(max-width: 760px)').matches) $('map').scrollIntoView({ behavior: 'smooth' });
   }
 
+
+  // ---------- Place names ----------
+  // Saved names live in the "places" table; guesses come from OpenStreetMap and are cached in this browser.
+  let places = [];
+  let placesLoaded = false;
+  let placesTableMissing = false;
+  let placeEntry = null; // stay being named in the dialog
+
+  const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  async function loadPlaces() {
+    placesLoaded = true;
+    const { data, error } = await sb.from('places').select('id,name,lat,lon,radius_m');
+    if (error) {
+      placesTableMissing = true;
+      console.warn('places table not available:', error.message);
+      places = [];
+      return;
+    }
+    places = data || [];
+  }
+
+  function savedPlaceFor(lat, lon) {
+    let best = null, bestD = Infinity;
+    for (const p of places) {
+      const d = dist({ lat, lon }, p);
+      if (d <= (p.radius_m || 100) && d < bestD) { best = p; bestD = d; }
+    }
+    return best;
+  }
+
+  function showStayName(e) {
+    const what = e.li && e.li.querySelector('.what');
+    if (!what) return;
+    let html;
+    if (e.place) {
+      html = `${esc(e.place.name)} <button class="rename" title="Rename">✎</button>`;
+    } else if (e.guess && e.guess.confident) {
+      html = `${esc(e.guess.name)} <button class="rename" title="Not right? Choose the place">✎</button>`;
+    } else if (e.guess) {
+      html = `${esc(e.guess.name || 'Unknown place')}<span class="unsure" title="Not sure: tap to choose">?</span>`;
+    } else {
+      html = `<span class="muted">Finding place…</span><span class="unsure" title="Choose the place">?</span>`;
+    }
+    what.innerHTML = html;
+    const label = e.place ? e.place.name : e.guess ? (e.guess.name || 'Unknown place') + (e.guess.confident ? '' : '?') : 'Stay ' + e.no;
+    e.marker.bindPopup(`<b>${esc(label)}</b><br>${stayTimes(e)}<br>${fmtDur(e.end - e.start)}`);
+  }
+
+  // --- OpenStreetMap lookups (free, no key). Requests go one at a time to be polite to the services.
+  let geoQueue = Promise.resolve();
+  const queued = (fn) => (geoQueue = geoQueue.then(fn, fn));
+  const GEO_CACHE = 'lt_geo_v1';
+  function geoCache() { try { return JSON.parse(store.get(GEO_CACHE) || '{}'); } catch { return {}; } }
+  function geoCacheSet(key, value) {
+    const c = geoCache();
+    c[key] = value;
+    const keys = Object.keys(c);
+    if (keys.length > 800) for (const k of keys.slice(0, keys.length - 800)) delete c[k];
+    store.set(GEO_CACHE, JSON.stringify(c));
+  }
+  const geoKey = (kind, lat, lon) => `${kind}:${lat.toFixed(4)},${lon.toFixed(4)}`;
+
+  const POI_KEYS = ['amenity', 'leisure', 'shop', 'tourism', 'office', 'healthcare', 'sport', 'club', 'craft', 'historic', 'railway', 'public_transport', 'aeroway', 'man_made', 'building', 'landuse', 'place', 'natural'];
+  function placeType(tags) {
+    for (const k of POI_KEYS) {
+      const v = tags[k];
+      if (v && v !== 'yes') return v.replace(/_/g, ' ');
+      if (v === 'yes') return k.replace(/_/g, ' ');
+    }
+    return 'place';
+  }
+
+  async function overpassCandidates(lat, lon) {
+    const key = geoKey('poi', lat, lon);
+    const cached = geoCache()[key];
+    if (cached) return cached;
+    const keys = 'amenity|leisure|shop|tourism|office|healthcare|sport|club|craft|historic|railway|public_transport|aeroway';
+    const q = `[out:json][timeout:20];
+(
+  nwr(around:120,${lat},${lon})[name][~"^(${keys})$"~"."];
+  nwr(around:50,${lat},${lon})[name][building];
+);
+out center tags 40;
+is_in(${lat},${lon})->.a;
+area.a[name][~"^(${keys}|building|landuse|man_made|natural)$"~"."];
+out tags;`;
+    let json = null;
+    for (const url of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+      try {
+        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        if (r.ok) { json = await r.json(); break; }
+      } catch {}
+    }
+    if (!json) return null;
+    const byName = new Map();
+    for (const el of json.elements || []) {
+      const tags = el.tags || {};
+      if (!tags.name) continue;
+      const inside = el.type === 'area';
+      const c = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
+      const d = inside ? 0 : c ? dist({ lat, lon }, c) : 999;
+      const type = placeType(tags);
+      // Lower score = better. Being inside a named site (club, park, school...) is strong evidence.
+      let score = d;
+      if (inside) score = tags.landuse || tags.natural ? 70 : tags.building && !tags.amenity && !tags.leisure && !tags.shop ? 25 : 8;
+      else if (tags.building && !tags.amenity && !tags.leisure && !tags.shop && !tags.tourism && !tags.office) score += 25;
+      if (tags.public_transport || tags.railway === 'stop' || tags.highway === 'bus_stop') score += 30;
+      const prev = byName.get(tags.name);
+      if (!prev || score < prev.score) byName.set(tags.name, { name: tags.name, type, dist: Math.round(d), inside, score: Math.round(score) });
+    }
+    const cands = [...byName.values()].sort((a, b) => a.score - b.score).slice(0, 8);
+    geoCacheSet(key, cands);
+    return cands;
+  }
+
+  async function addressFor(lat, lon) {
+    const key = geoKey('addr', lat, lon);
+    const c = geoCache();
+    if (key in c) return c[key];
+    let out = null;
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${lat}&lon=${lon}`, { headers: { 'Accept-Language': navigator.language || 'en' } });
+      if (r.ok) {
+        const j = await r.json();
+        const a = j.address || {};
+        const street = [a.house_number, a.road].filter(Boolean).join(' ');
+        const area = a.suburb || a.neighbourhood || a.village || a.town || a.city || '';
+        out = { name: j.name || null, street: street || null, area: area || null };
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1100)); // Nominatim allows 1 request per second
+    if (out) geoCacheSet(key, out);
+    return out;
+  }
+
+  const addressLabel = (a) => a ? (a.street ? a.street + (a.area ? ', ' + a.area : '') : a.area) : null;
+
+  /** Best guess for a stay: {name, confident, cands, address}. */
+  async function guessPlace(lat, lon) {
+    const cands = (await queued(() => overpassCandidates(lat, lon))) || [];
+    const best = cands[0], second = cands[1];
+    const confident = !!best && best.score <= 35 && (!second || second.score - best.score >= 25);
+    if (confident) return { name: best.name, confident: true, cands };
+    const address = await queued(() => addressFor(lat, lon));
+    const name = best && best.score <= 60 ? best.name : (address && (address.name || addressLabel(address))) || (best && best.name) || null;
+    return { name, confident: false, cands, address };
+  }
+
+  async function guessStayNames(stays, seq) {
+    for (const e of stays) {
+      if (seq !== loadSeq) return;
+      if (e.place) continue;
+      e.guess = await guessPlace(e.lat, e.lon);
+      if (seq !== loadSeq) return;
+      showStayName(e);
+    }
+  }
+
+  // --- Chooser dialog
+  async function openPlaceDialog(e) {
+    placeEntry = e;
+    $('placeWhen').textContent = `${stayTimes(e)} · ${fmtDur(e.end - e.start)}`;
+    $('placeError').textContent = '';
+    $('placeCustom').value = e.place ? e.place.name : '';
+    $('placeForget').classList.toggle('hidden', !e.place);
+    $('placeChoices').innerHTML = '';
+    $('placeStatus').textContent = 'Looking for places nearby…';
+    $('placeDlg').classList.remove('hidden');
+    if (placesTableMissing) {
+      $('placeError').textContent = 'Saving names needs the updated database table: re-run supabase/schema.sql in the Supabase SQL Editor (see README).';
+    }
+    const g = e.guess && e.guess.cands && e.guess.address !== undefined ? e.guess : await guessPlace(e.lat, e.lon).then(async (x) => {
+      if (x.address === undefined) x.address = await queued(() => addressFor(e.lat, e.lon));
+      return x;
+    });
+    if (placeEntry !== e) return;
+    const options = [];
+    for (const c of g.cands || []) options.push({ name: c.name, info: c.inside ? `${c.type} · you were inside` : `${c.type} · ${c.dist} m away` });
+    const addr = addressLabel(g.address);
+    if (g.address && g.address.name && !options.some((o) => o.name === g.address.name)) options.push({ name: g.address.name, info: 'nearby' });
+    if (addr) options.push({ name: addr, info: 'address' });
+    $('placeStatus').textContent = options.length ? 'Tap the right one:' : 'No named places found nearby. Type a name below.';
+    for (const o of options) {
+      const b = document.createElement('button');
+      b.innerHTML = `<span>${esc(o.name)}</span><small>${esc(o.info)}</small>`;
+      b.addEventListener('click', () => savePlaceName(o.name));
+      $('placeChoices').appendChild(b);
+    }
+  }
+
+  async function savePlaceName(name) {
+    const e = placeEntry;
+    name = (name || '').trim();
+    if (!e || !name) return;
+    $('placeError').textContent = '';
+    try {
+      const existing = e.place || savedPlaceFor(e.lat, e.lon);
+      if (existing) {
+        const { error } = await sb.from('places').update({ name }).eq('id', existing.id);
+        if (error) throw error;
+        existing.name = name;
+      } else {
+        const { data: u } = await sb.auth.getUser();
+        const { data, error } = await sb.from('places')
+          .insert({ user_id: u.user.id, name, lat: e.lat, lon: e.lon, radius_m: 100 })
+          .select('id,name,lat,lon,radius_m').single();
+        if (error) throw error;
+        places.push(data);
+      }
+    } catch (err) {
+      $('placeError').textContent = 'Could not save: ' + (err.message || err) +
+        (/places|relation|schema/i.test(err.message || '') ? '\nRe-run supabase/schema.sql in the Supabase SQL Editor to add the places table.' : '');
+      return;
+    }
+    $('placeDlg').classList.add('hidden');
+    refreshPlaceNames();
+  }
+
+  function refreshPlaceNames() {
+    for (const e of lastEntries) {
+      if (e.type !== 'stay') continue;
+      e.place = savedPlaceFor(e.lat, e.lon);
+      showStayName(e);
+    }
+  }
+
+  $('placeSaveCustom').addEventListener('click', () => savePlaceName($('placeCustom').value));
+  $('placeCustom').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') savePlaceName($('placeCustom').value); });
+  $('placeClose').addEventListener('click', () => { placeEntry = null; $('placeDlg').classList.add('hidden'); });
+  $('placeForget').addEventListener('click', async () => {
+    const e = placeEntry;
+    if (!e || !e.place) return;
+    const { error } = await sb.from('places').delete().eq('id', e.place.id);
+    if (error) { $('placeError').textContent = 'Could not delete: ' + error.message; return; }
+    places = places.filter((p) => p.id !== e.place.id);
+    $('placeDlg').classList.add('hidden');
+    refreshPlaceNames();
+    if (!e.guess) guessStayNames([e], loadSeq);
+  });
 
   // ---------- Import Google Timeline ----------
   let importPoints = null;

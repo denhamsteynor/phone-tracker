@@ -111,6 +111,12 @@ Using it:
    - Small dots are individual recorded points. Click one to see its time, speed and accuracy.
    - The side panel shows the day's totals and a list of stays and trips. Click an entry to zoom to it.
 
+### Place names
+
+Each stay is named automatically from OpenStreetMap: if you were clearly at one place (for example inside the grounds of a tennis club), its name is shown. If the viewer isn't sure, it shows its best guess with an orange **?**. Tap it to pick from nearby places, the street address, or type your own name (e.g. "Home"). Tap ✎ to rename any stay. Names you choose are saved to your database and used automatically for every later visit within 100 m, on any device.
+
+Saving names needs the `places` table. If you set up Supabase before it existed, run `supabase/schema.sql` again in the SQL Editor. It's safe to re-run and doesn't touch your points.
+
 ### Importing your old Google Timeline
 
 Click **Import** in the viewer and choose your Google export file. The file is read in your browser and saved straight to your own Supabase database. Points you already have are skipped, so importing twice is safe.
