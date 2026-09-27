@@ -81,6 +81,8 @@
     font-size: 12px; font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.4);
   }
   @media (prefers-color-scheme: dark) {
+    .osm-tiles { filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9); }
+    .leaflet-control-layers { background: var(--panel); color: var(--text); }
     .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); }
     .leaflet-control-zoom a, .leaflet-control-attribution { background: var(--panel) !important; color: var(--text) !important; }
     .leaflet-control-attribution a { color: var(--accent); }
@@ -175,8 +177,7 @@
 
   let sb = null;          // Supabase client
   let map = null;
-  let baseLayer = null;
-  let dataLayer = null;
+    let dataLayer = null;
   let loadSeq = 0;
   let lastEntries = [];
 
@@ -280,12 +281,21 @@
   // ---------- Map ----------
   const dark = window.matchMedia('(prefers-color-scheme: dark)');
   function setBaseLayer() {
-    if (baseLayer) map.removeLayer(baseLayer);
-    const style = dark.matches ? 'dark_all' : 'rastertiles/voyager';
-    baseLayer = L.tileLayer(`https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png`, {
-      maxZoom: 20, subdomains: 'abcd',
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    }).addTo(map);
+    // Free tile sources that need no API key. The street map is darkened with a CSS filter in dark mode.
+    const layers = {
+      'Map': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, className: 'osm-tiles',
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      }),
+      'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19,
+        attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics',
+      }),
+    };
+    const chosen = layers[store.get('lt_layer')] || layers['Map'];
+    chosen.addTo(map);
+    L.control.layers(layers, null, { position: 'topright' }).addTo(map);
+    map.on('baselayerchange', (e) => store.set('lt_layer', e.name));
   }
 
   function startApp() {
@@ -293,7 +303,7 @@
     if (!map) {
       map = L.map('map', { preferCanvas: true, zoomControl: true }).setView([51.5, -0.1], 11);
       setBaseLayer();
-      dark.addEventListener('change', () => { setBaseLayer(); if (lastEntries.length || $('day').value) loadDay(); });
+      dark.addEventListener('change', () => { if ($('day').value) loadDay(); });
       dataLayer = L.featureGroup().addTo(map);
     }
     setTimeout(() => map.invalidateSize(), 0);
@@ -446,7 +456,7 @@
     $('modes').innerHTML = '';
     const dayPts = pts.filter((p) => !p.prevDay);
     const title = dayStart.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    $('status').textContent = `${title} · ${dayPts.length} points`;
+    $('status').textContent = `${title} · ${dayPts.length} ${dayPts.length === 1 ? 'point' : 'points'}`;
 
     if (!pts.length) {
       list.innerHTML = '<li class="empty">No points recorded on this day.</li>';
