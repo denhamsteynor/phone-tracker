@@ -111,6 +111,13 @@ Using it:
    - Small dots are individual recorded points. Click one to see its time, speed and accuracy.
    - The side panel shows the day's totals and a list of stays and trips. Click an entry to zoom to it.
 
+### Importing your old Google Timeline
+
+Click **Import** in the viewer and choose your Google export file. The file is read in your browser and saved straight to your own Supabase database. Points you already have are skipped, so importing twice is safe.
+
+- **Newer phones:** on Android open **Settings → Location → Location services → Timeline → Export Timeline data** (or Google Maps → your picture → **Your Timeline** → ⋮ → **Location & privacy settings → Export Timeline data**). This saves `Timeline.json`. You can open the viewer website on the phone and import it there, or copy it to your laptop.
+- **Older Google Takeout exports:** `Records.json` and the monthly files in `Semantic Location History` also work. Select several files at once.
+
 The viewer also works on a phone (it stacks the map above the list), and it follows your system's light or dark mode. You can still open `viewer/index.html` straight from disk if you prefer.
 
 ---

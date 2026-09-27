@@ -47,6 +47,16 @@
   .form .row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
   .error { color: var(--danger); margin-top: 10px; white-space: pre-wrap; }
 
+  /* Import dialog */
+  .modal { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal .form { max-width: 520px; max-height: 100%; overflow-y: auto; }
+  .modal ol { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
+  .modal ol li { margin: 3px 0; }
+  .modal input[type=file] { width: 100%; padding: 8px; }
+  .progress { height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; margin-top: 12px; }
+  .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #importInfo { margin-top: 10px; white-space: pre-wrap; }
+
   /* Main app */
   #app { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr; height: 100%; }
   header {
@@ -140,6 +150,7 @@
     <button id="nextDay" title="Next day" aria-label="Next day">&#8250;</button>
     <button id="today">Today</button>
     <span class="spacer"></span>
+    <button id="importBtn" title="Import Google Timeline history">Import</button>
     <button id="reload" title="Reload">Reload</button>
     <button id="signOut">Sign out</button>
   </header>
@@ -150,6 +161,26 @@
     <div class="modes" id="modes"></div>
     <ol class="timeline" id="timeline"></ol>
   </aside>
+</div>
+
+<!-- 4. Import Google Timeline -->
+<div id="importDlg" class="modal hidden">
+  <div class="form">
+    <h1>Import Google Timeline</h1>
+    <p>Your file is read in this browser and saved straight to your own database. It isn't sent anywhere else.</p>
+    <ol>
+      <li><b>Newer phones:</b> on your Android phone open <b>Settings → Location → Location services → Timeline</b> (or Google Maps → your picture → <b>Your Timeline</b> → ⋮ → <b>Location &amp; privacy settings</b>) and tap <b>Export Timeline data</b>. It saves <code>Timeline.json</code>.</li>
+      <li><b>Older Google Takeout exports</b> also work: <code>Records.json</code> and the monthly files from <code>Semantic Location History</code> (select several at once).</li>
+      <li>You can open this website on the phone and pick the file there, or copy it to your laptop.</li>
+    </ol>
+    <input type="file" id="importFiles" accept=".json,application/json" multiple>
+    <div id="importInfo"></div>
+    <div class="progress hidden" id="importProgress"><div></div></div>
+    <div class="row">
+      <button class="primary" id="importGo" disabled>Import</button>
+      <button id="importClose">Close</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -549,6 +580,227 @@
     li.classList.add('active');
     if (window.matchMedia('(max-width: 760px)').matches) $('map').scrollIntoView({ behavior: 'smooth' });
   }
+
+
+  // ---------- Import Google Timeline ----------
+  let importPoints = null;
+  let importRunning = false;
+
+  function googleMode(type) {
+    if (!type) return null;
+    const t = String(type).toUpperCase().replace(/[\s-]+/g, '_');
+    if (t.includes('STILL')) return 'still';
+    if (/WALK|RUN|FOOT|HIK/.test(t)) return 'walk';
+    if (/MOTOR/.test(t)) return 'vehicle';
+    if (/CYCL|BICYCLE|BIKING/.test(t)) return 'bike';
+    if (/VEHICLE|CAR|BUS|TRAIN|SUBWAY|TRAM|METRO|RAIL|FERRY|BOAT|FLY|PLANE|TAXI|DRIV|SKI|SAIL|GONDOLA|CABLE/.test(t)) return 'vehicle';
+    return null;
+  }
+
+  function e7(v) {
+    v = Number(v);
+    if (v > 1800000000) v -= 4294967296; // old exports stored some negative values as unsigned
+    return v / 1e7;
+  }
+
+  // Accepts "51.5°, -0.12°", "geo:51.5,-0.12", {latitudeE7, longitudeE7} or {latE7, lngE7}.
+  function latLng(v) {
+    if (v == null) return null;
+    if (typeof v === 'object') {
+      if (v.latitudeE7 != null) return [e7(v.latitudeE7), e7(v.longitudeE7)];
+      if (v.latE7 != null) return [e7(v.latE7), e7(v.lngE7)];
+      if (v.latLng) return latLng(v.latLng);
+      if (v.LatLng) return latLng(v.LatLng);
+      return null;
+    }
+    const m = String(v).match(/-?\d+(?:\.\d+)?/g);
+    return m && m.length >= 2 ? [Number(m[0]), Number(m[1])] : null;
+  }
+
+  function toMs(v) {
+    if (v == null) return NaN;
+    if (typeof v === 'number') return v;
+    if (/^\d{10,}$/.test(v)) return Number(v);
+    return Date.parse(v);
+  }
+
+  /** Turns any supported Google export into [{t, lat, lon, acc, speed, act}]. */
+  function extractGoogle(json) {
+    const pts = [];
+    const acts = []; // [start, end, mode] for giving path points a travel mode
+    const add = (time, ll, extra = {}) => {
+      const t = toMs(time);
+      if (!isFinite(t) || !ll) return;
+      const [lat, lon] = ll;
+      if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180 || (lat === 0 && lon === 0)) return;
+      const num = (x) => (x == null || !isFinite(Number(x)) ? null : Number(x));
+      pts.push({ t, lat, lon, acc: num(extra.acc), speed: num(extra.speed), act: extra.act || null });
+    };
+
+    // Newer on-device export: {semanticSegments, rawSignals} (Android) or a plain array (iPhone).
+    const segs = Array.isArray(json) ? json : json.semanticSegments;
+    if (Array.isArray(segs)) {
+      for (const s of segs) {
+        const st = toMs(s.startTime), en = toMs(s.endTime);
+        if (s.visit) {
+          const tc = s.visit.topCandidate || {};
+          const ll = latLng(tc.placeLocation);
+          add(st, ll, { act: 'still' });
+          add(en, ll, { act: 'still' });
+        }
+        if (s.activity) {
+          const mode = googleMode(s.activity.topCandidate && s.activity.topCandidate.type);
+          acts.push([st, en, mode]);
+          add(st, latLng(s.activity.start), { act: mode });
+          add(en, latLng(s.activity.end), { act: mode });
+        }
+        if (Array.isArray(s.timelinePath)) {
+          for (const p of s.timelinePath) {
+            const t = p.time ? toMs(p.time) : st + Number(p.durationMinutesOffsetFromStartTime || 0) * 60000;
+            add(t, latLng(p.point));
+          }
+        }
+      }
+    }
+    if (Array.isArray(json.rawSignals)) {
+      for (const r of json.rawSignals) {
+        const p = r.position;
+        if (p) add(p.timestamp, latLng(p.LatLng || p.latLng), { acc: p.accuracyMeters, speed: p.speedMetersPerSecond });
+      }
+    }
+
+    // Google Takeout Records.json
+    if (Array.isArray(json.locations)) {
+      for (const r of json.locations) {
+        const a = r.activity && r.activity[0] && r.activity[0].activity && r.activity[0].activity[0];
+        add(r.timestamp != null ? r.timestamp : Number(r.timestampMs), latLng(r),
+          { acc: r.accuracy, speed: r.velocity, act: a ? googleMode(a.type) : null });
+      }
+    }
+
+    // Google Takeout Semantic Location History (monthly files)
+    if (Array.isArray(json.timelineObjects)) {
+      const ts = (d, k) => (d[k] != null ? d[k] : Number(d[k + 'Ms']));
+      for (const o of json.timelineObjects) {
+        if (o.placeVisit) {
+          const v = o.placeVisit, d = v.duration || {};
+          const ll = latLng(v.location) || latLng({ latE7: v.centerLatE7, lngE7: v.centerLngE7 });
+          add(ts(d, 'startTimestamp'), ll, { act: 'still' });
+          add(ts(d, 'endTimestamp'), ll, { act: 'still' });
+        }
+        if (o.activitySegment) {
+          const a = o.activitySegment, d = a.duration || {};
+          const st = toMs(ts(d, 'startTimestamp')), en = toMs(ts(d, 'endTimestamp'));
+          const mode = googleMode(a.activityType);
+          acts.push([st, en, mode]);
+          add(st, latLng(a.startLocation), { act: mode });
+          add(en, latLng(a.endLocation), { act: mode });
+          const raw = (a.simplifiedRawPath && a.simplifiedRawPath.points) || [];
+          for (const p of raw) add(p.timestamp != null ? p.timestamp : Number(p.timestampMs), latLng(p), { act: mode, acc: p.accuracyMeters });
+        }
+      }
+    }
+
+    // Give points without a mode the mode of the trip they fall in.
+    acts.sort((x, y) => x[0] - y[0]);
+    pts.sort((x, y) => x.t - y.t);
+    let ai = 0;
+    for (const p of pts) {
+      if (p.act) continue;
+      while (ai < acts.length && acts[ai][1] < p.t) ai++;
+      if (ai < acts.length && acts[ai][0] <= p.t && acts[ai][2]) p.act = acts[ai][2];
+    }
+    return pts;
+  }
+
+  function openImport() {
+    if (importRunning) { $('importDlg').classList.remove('hidden'); return; }
+    importPoints = null;
+    $('importFiles').value = '';
+    $('importInfo').textContent = '';
+    $('importInfo').classList.remove('error');
+    $('importGo').disabled = true;
+    $('importProgress').classList.add('hidden');
+    $('importDlg').classList.remove('hidden');
+  }
+
+  $('importBtn').addEventListener('click', openImport);
+  $('importClose').addEventListener('click', () => $('importDlg').classList.add('hidden'));
+
+  $('importFiles').addEventListener('change', async () => {
+    const files = [...$('importFiles').files];
+    if (!files.length) return;
+    $('importGo').disabled = true;
+    $('importInfo').classList.remove('error');
+    const byTime = new Map();
+    try {
+      for (let i = 0; i < files.length; i++) {
+        $('importInfo').textContent = `Reading ${files[i].name} (${i + 1} of ${files.length})…`;
+        const json = JSON.parse(await files[i].text());
+        for (const p of extractGoogle(json)) {
+          const prev = byTime.get(p.t);
+          // Keep one point per timestamp, preferring one that says how you were travelling.
+          if (!prev || (!prev.act && p.act) || (prev.act === 'still' && p.act && p.act !== 'still')) byTime.set(p.t, p);
+        }
+      }
+    } catch (err) {
+      $('importInfo').classList.add('error');
+      $('importInfo').textContent = 'Could not read that file: ' + (err.message || err) + '\nMake sure it is the .json file from the Timeline export.';
+      return;
+    }
+    importPoints = [...byTime.values()].sort((a, b) => a.t - b.t);
+    if (!importPoints.length) {
+      $('importInfo').classList.add('error');
+      $('importInfo').textContent = 'No location points found in that file. Is it a Google Timeline export?';
+      return;
+    }
+    const fmtDate = (t) => new Date(t).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+    $('importInfo').textContent = `Found ${importPoints.length.toLocaleString()} points from ${fmtDate(importPoints[0].t)} to ${fmtDate(importPoints[importPoints.length - 1].t)}.\nPoints you already have are skipped, so importing twice is safe.`;
+    $('importGo').disabled = false;
+  });
+
+  $('importGo').addEventListener('click', async () => {
+    if (!importPoints || importRunning) return;
+    importRunning = true;
+    $('importGo').disabled = true;
+    $('importFiles').disabled = true;
+    const bar = $('importProgress');
+    bar.classList.remove('hidden');
+    const BATCH = 1000;
+    const total = importPoints.length;
+    try {
+      const { data: userData, error: userErr } = await sb.auth.getUser();
+      if (userErr || !userData.user) throw userErr || new Error('Not signed in');
+      const userId = userData.user.id;
+      for (let i = 0; i < total; i += BATCH) {
+        const rows = importPoints.slice(i, i + BATCH).map((p) => ({
+          user_id: userId,
+          recorded_at: new Date(p.t).toISOString(),
+          lat: p.lat, lon: p.lon, accuracy: p.acc, speed: p.speed, activity: p.act,
+        }));
+        let error;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          ({ error } = await sb.from('locations').upsert(rows, { onConflict: 'user_id,recorded_at', ignoreDuplicates: true }));
+          if (!error) break;
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+        }
+        if (error) throw error;
+        const done = Math.min(i + BATCH, total);
+        bar.firstElementChild.style.width = (100 * done / total).toFixed(1) + '%';
+        $('importInfo').textContent = `Importing… ${done.toLocaleString()} of ${total.toLocaleString()} points`;
+      }
+      const last = new Date(importPoints[total - 1].t);
+      $('importInfo').textContent = `Done: imported ${total.toLocaleString()} points. Use the date picker to browse your history.`;
+      if (!$('day').value) setDay(last); else loadDay();
+    } catch (err) {
+      $('importInfo').classList.add('error');
+      $('importInfo').textContent = 'Import stopped: ' + (err.message || err) + '\nYou can run it again; already-imported points are skipped.';
+      $('importGo').disabled = false;
+    } finally {
+      importRunning = false;
+      $('importFiles').disabled = false;
+    }
+  });
 
   if (typeof supabase === 'undefined' || typeof L === 'undefined') {
     document.body.innerHTML = '<div class="screen"><div class="form"><h1>Could not load</h1><p>The map and database libraries could not be downloaded. Check your internet connection and reload.</p></div></div>';
