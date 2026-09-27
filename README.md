@@ -91,16 +91,27 @@ The app starts in Walking mode. When it's still and a check shows you've moved, 
 
 ## Part 4: Use the viewer on your laptop
 
-1. Download [`viewer/index.html`](viewer/index.html) from this repository: open the file on GitHub and click the **Download raw file** button. Save it anywhere, for example your Documents folder.
-2. Double-click it to open it in your browser (Chrome, Edge, Firefox or Safari).
-3. The first time, enter the **Project URL** and **anon key**, then sign in with your email and password. The browser remembers them. Use **Sign out** on a shared computer.
-4. Choose a day with the date picker, or step through days with ‹ and ›. **Today** jumps back to today.
+The viewer is published as a website by GitHub Pages at
+**https://denhamsteynor.github.io/phone-tracker/**
+
+One-time setup (GitHub Pages is free only for public repositories):
+
+1. Make the repository public: **Settings → General**, scroll to **Danger Zone → Change repository visibility → Change to public**. The code contains no passwords or keys; your location data stays in Supabase behind your login.
+2. Turn on Pages: **Settings → Pages**, and under **Build and deployment → Source** choose **GitHub Actions**.
+3. Go to **Actions → Publish viewer website → Run workflow → Run workflow**. After about a minute the site is live. It also republishes automatically whenever `viewer/index.html` changes.
+4. Stop strangers creating accounts in your Supabase project: in Supabase open **Authentication → Sign In / Providers** (or **Authentication → Settings**) and switch off **Allow new users to sign up**. Your own user keeps working.
+
+Using it:
+
+1. Open the website and bookmark it.
+2. The first time, enter the **Project URL** and **anon/publishable key**, then sign in with your email and password. The browser remembers them. Use **Sign out** on a shared computer.
+3. Choose a day with the date picker, or step through days with ‹ and ›. **Today** jumps back to today.
    - The route is coloured by how you travelled: green = walking, orange = cycling, blue = driving.
    - Purple numbered pins are **stays**: places where you spent at least 10 minutes within 150 m.
    - Small dots are individual recorded points. Click one to see its time, speed and accuracy.
    - The side panel shows the day's totals and a list of stays and trips. Click an entry to zoom to it.
 
-The viewer also works on a phone (it stacks the map above the list), and it follows your system's light or dark mode.
+The viewer also works on a phone (it stacks the map above the list), and it follows your system's light or dark mode. You can still open `viewer/index.html` straight from disk if you prefer.
 
 ---
 
@@ -116,6 +127,7 @@ The viewer also works on a phone (it stacks the map above the list), and it foll
 ```
 .github/workflows/build-apk.yml     builds, tests, signs and releases the APK
 .github/workflows/make-keystore.yml makes the permanent signing key (run once)
+.github/workflows/pages.yml         publishes the viewer as a website (GitHub Pages)
 supabase/schema.sql                 database table and security rules
 android/                            the Android app (Kotlin)
 viewer/index.html                   the map viewer (single file)
