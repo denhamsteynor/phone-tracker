@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Location Timeline</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1b1d21; --muted: #5f6670; --border: #dde1e6;
+    --accent: #2563eb; --accent-text: #ffffff; --hover: #eef2f7; --danger: #b3261e;
+    --walk: #16a34a; --bike: #ea580c; --vehicle: #2563eb; --other: #7c8591; --stay: #9333ea;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111316; --panel: #1b1e23; --text: #e7e9ec; --muted: #9aa3ad; --border: #2e333a;
+      --accent: #60a5fa; --accent-text: #0b1220; --hover: #252a31; --danger: #f28b82;
+      --walk: #4ade80; --bike: #fb923c; --vehicle: #60a5fa; --other: #9aa3ad; --stay: #c084fc;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button, input { font: inherit; color: inherit; }
+  button {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; cursor: pointer; min-height: 36px;
+  }
+  button:hover { background: var(--hover); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  input {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-height: 36px;
+  }
+  .hidden { display: none !important; }
+
+  /* Setup / sign-in screens */
+  .screen { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .form { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 22px; width: 100%; max-width: 420px; }
+  .form h1 { margin: 0 0 6px; font-size: 22px; }
+  .form p { margin: 0 0 14px; color: var(--muted); }
+  .form label { display: block; margin: 10px 0 4px; font-weight: 600; font-size: 14px; }
+  .form input { width: 100%; }
+  .form .row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .error { color: var(--danger); margin-top: 10px; white-space: pre-wrap; }
+
+  /* Main app */
+  #app { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr; height: 100%; }
+  header {
+    grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header .title { font-weight: 700; margin-right: 8px; }
+  header .spacer { flex: 1; }
+  #map { grid-column: 1; grid-row: 2; min-height: 0; background: var(--bg); }
+  #panel { grid-column: 2; grid-row: 2; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); padding: 12px; }
+  #status { color: var(--muted); font-size: 13px; min-height: 18px; }
+  .totals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 12px; }
+  .stat { background: var(--bg); border-radius: 10px; padding: 8px; text-align: center; }
+  .stat b { display: block; font-size: 17px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .modes { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+  ol.timeline { list-style: none; margin: 0; padding: 0; }
+  ol.timeline li {
+    display: flex; gap: 10px; padding: 9px 8px; border-radius: 10px; cursor: pointer; border-left: 4px solid transparent;
+  }
+  ol.timeline li:hover, ol.timeline li.active { background: var(--hover); }
+  ol.timeline li .icon { font-size: 18px; width: 24px; text-align: center; }
+  ol.timeline li .what { font-weight: 600; }
+  ol.timeline li .when { color: var(--muted); font-size: 13px; }
+  .empty { color: var(--muted); padding: 16px 4px; }
+
+  .leaflet-container { font: inherit; }
+  .stay-pin {
+    background: var(--stay); color: #fff; border: 2px solid #fff; border-radius: 50%;
+    width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  }
+  @media (prefers-color-scheme: dark) {
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); }
+    .leaflet-control-zoom a, .leaflet-control-attribution { background: var(--panel) !important; color: var(--text) !important; }
+    .leaflet-control-attribution a { color: var(--accent); }
+  }
+
+  @media (max-width: 760px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: auto 55vh auto; height: auto; min-height: 100%; }
+    #map { grid-row: 2; height: 55vh; }
+    #panel { grid-column: 1; grid-row: 3; border-left: none; border-top: 1px solid var(--border); overflow: visible; }
+    header .title { display: none; }
+    header .spacer { display: none; }
+    header input[type=date] { flex: 1; min-width: 130px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 1. First run: project URL + anon key -->
+<div id="setup" class="screen hidden">
+  <form class="form" id="setupForm">
+    <h1>Location Timeline</h1>
+    <p>Enter your Supabase project details. They are saved in this browser only.</p>
+    <label for="cfgUrl">Project URL</label>
+    <input id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off" required>
+    <label for="cfgKey">anon public key</label>
+    <input id="cfgKey" placeholder="eyJhbGciOi…" autocomplete="off" required>
+    <div class="row"><button class="primary" type="submit">Continue</button></div>
+    <div class="error" id="setupError"></div>
+  </form>
+</div>
+
+<!-- 2. Sign in -->
+<div id="login" class="screen hidden">
+  <form class="form" id="loginForm">
+    <h1>Sign in</h1>
+    <p id="loginProject"></p>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username" required>
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" required>
+    <div class="row">
+      <button class="primary" type="submit" id="loginBtn">Sign in</button>
+      <button type="button" id="changeProject">Change project</button>
+    </div>
+    <div class="error" id="loginError"></div>
+  </form>
+</div>
+
+<!-- 3. Map -->
+<div id="app" class="hidden">
+  <header>
+    <span class="title">Location Timeline</span>
+    <button id="prevDay" title="Previous day" aria-label="Previous day">&#8249;</button>
+    <input type="date" id="day" aria-label="Day">
+    <button id="nextDay" title="Next day" aria-label="Next day">&#8250;</button>
+    <button id="today">Today</button>
+    <span class="spacer"></span>
+    <button id="reload" title="Reload">Reload</button>
+    <button id="signOut">Sign out</button>
+  </header>
+  <div id="map"></div>
+  <aside id="panel">
+    <div id="status"></div>
+    <div class="totals" id="totals"></div>
+    <div class="modes" id="modes"></div>
+    <ol class="timeline" id="timeline"></ol>
+  </aside>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Settings ----------
+  const STAY_RADIUS_M = 150;
+  const STAY_MIN_MS = 10 * 60 * 1000;
+  const PAGE = 1000;
+  const MODES = {
+    walk:    { label: 'Walking', icon: '🚶', color: '--walk' },
+    bike:    { label: 'Cycling', icon: '🚲', color: '--bike' },
+    vehicle: { label: 'Driving', icon: '🚗', color: '--vehicle' },
+    other:   { label: 'Moving',  icon: '➜',  color: '--other' },
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} },
+  };
+
+  let sb = null;          // Supabase client
+  let map = null;
+  let baseLayer = null;
+  let dataLayer = null;
+  let loadSeq = 0;
+  let lastEntries = [];
+
+  function show(which) {
+    for (const id of ['setup', 'login', 'app']) $(id).classList.toggle('hidden', id !== which);
+  }
+
+  function normaliseUrl(u) {
+    u = (u || '').trim().replace(/\/+$/, '');
+    if (u && !/^https?:\/\//i.test(u)) u = 'https://' + u;
+    return u;
+  }
+
+  // ---------- Start-up ----------
+  async function boot() {
+    const url = store.get('lt_url');
+    const key = store.get('lt_key');
+    if (!url || !key) { $('cfgUrl').value = url || ''; $('cfgKey').value = key || ''; show('setup'); return; }
+    try {
+      sb = supabase.createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'lt_auth' } });
+    } catch (e) {
+      $('setupError').textContent = 'Could not use these details: ' + e.message;
+      show('setup');
+      return;
+    }
+    const { data } = await sb.auth.getSession();
+    if (data && data.session) startApp();
+    else showLogin();
+  }
+
+  function showLogin() {
+    $('loginProject').textContent = store.get('lt_url') || '';
+    $('loginError').textContent = '';
+    show('login');
+    $('email').focus();
+  }
+
+  $('setupForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const url = normaliseUrl($('cfgUrl').value);
+    const key = $('cfgKey').value.trim();
+    if (!url || !key) return;
+    store.set('lt_url', url);
+    store.set('lt_key', key);
+    boot();
+  });
+
+  $('changeProject').addEventListener('click', () => {
+    $('cfgUrl').value = store.get('lt_url') || '';
+    $('cfgKey').value = store.get('lt_key') || '';
+    store.del('lt_url');
+    store.del('lt_key');
+    show('setup');
+  });
+
+  $('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('loginError').textContent = '';
+    $('loginBtn').disabled = true;
+    try {
+      const { error } = await sb.auth.signInWithPassword({ email: $('email').value.trim(), password: $('password').value });
+      if (error) throw error;
+      $('password').value = '';
+      startApp();
+    } catch (err) {
+      $('loginError').textContent = 'Sign-in failed: ' + (err.message || err);
+    } finally {
+      $('loginBtn').disabled = false;
+    }
+  });
+
+  $('signOut').addEventListener('click', async () => {
+    await sb.auth.signOut();
+    showLogin();
+  });
+
+  // ---------- Dates ----------
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const toInputDate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  function fromInputDate(s) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d, 0, 0, 0, 0);
+  }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  const fmtTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  function fmtDur(ms) {
+    const m = Math.max(0, Math.round(ms / 60000));
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60);
+    return h + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
+  }
+  const fmtKm = (m) => m >= 1000 ? (m / 1000).toFixed(m >= 10000 ? 0 : 1) + ' km' : Math.round(m) + ' m';
+
+  function setDay(d) { $('day').value = toInputDate(d); loadDay(); }
+  $('day').addEventListener('change', () => { if ($('day').value) loadDay(); });
+  $('prevDay').addEventListener('click', () => setDay(addDays(fromInputDate($('day').value), -1)));
+  $('nextDay').addEventListener('click', () => setDay(addDays(fromInputDate($('day').value), 1)));
+  $('today').addEventListener('click', () => setDay(new Date()));
+  $('reload').addEventListener('click', () => loadDay());
+
+  // ---------- Map ----------
+  const dark = window.matchMedia('(prefers-color-scheme: dark)');
+  function setBaseLayer() {
+    if (baseLayer) map.removeLayer(baseLayer);
+    const style = dark.matches ? 'dark_all' : 'rastertiles/voyager';
+    baseLayer = L.tileLayer(`https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png`, {
+      maxZoom: 20, subdomains: 'abcd',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    }).addTo(map);
+  }
+
+  function startApp() {
+    show('app');
+    if (!map) {
+      map = L.map('map', { preferCanvas: true, zoomControl: true }).setView([51.5, -0.1], 11);
+      setBaseLayer();
+      dark.addEventListener('change', () => { setBaseLayer(); if (lastEntries.length || $('day').value) loadDay(); });
+      dataLayer = L.featureGroup().addTo(map);
+    }
+    setTimeout(() => map.invalidateSize(), 0);
+    if (!$('day').value) $('day').value = toInputDate(new Date());
+    loadDay();
+  }
+
+  // ---------- Data ----------
+  const COLS = 'recorded_at,lat,lon,accuracy,speed,activity';
+
+  async function fetchDay(start, end) {
+    const rows = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await sb.from('locations').select(COLS)
+        .gte('recorded_at', start.toISOString()).lt('recorded_at', end.toISOString())
+        .order('recorded_at', { ascending: true }).range(from, from + PAGE - 1);
+      if (error) throw error;
+      rows.push(...data);
+      $('status').textContent = `Loading… ${rows.length} points`;
+      if (data.length < PAGE) break;
+    }
+    // Last point before midnight, so a stay that began yesterday shows this morning.
+    const { data: before, error } = await sb.from('locations').select(COLS)
+      .lt('recorded_at', start.toISOString()).order('recorded_at', { ascending: false }).limit(1);
+    if (error) throw error;
+    const pts = rows.map(toPoint);
+    if (before && before.length) pts.unshift({ ...toPoint(before[0]), prevDay: true });
+    return pts;
+  }
+
+  function toPoint(r) {
+    return { t: Date.parse(r.recorded_at), lat: r.lat, lon: r.lon, acc: r.accuracy, speed: r.speed, act: r.activity };
+  }
+
+  function dist(a, b) {
+    const R = 6371008.8, rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  const modeKey = (act) => (MODES[act] && act !== 'other') ? act : 'other';
+
+  /** Splits points into stays and trips. */
+  function buildTimeline(pts, dayStart, dayEnd) {
+    const now = Date.now();
+    const endCap = Math.min(dayEnd.getTime(), now);
+    const stays = [];
+    let i = 0;
+    while (i < pts.length) {
+      let j = i + 1;
+      while (j < pts.length && dist(pts[i], pts[j]) <= STAY_RADIUS_M) j++;
+      const departure = j < pts.length ? pts[j].t : endCap;
+      if (departure - pts[i].t >= STAY_MIN_MS) {
+        let lat = 0, lon = 0;
+        for (let k = i; k < j; k++) { lat += pts[k].lat; lon += pts[k].lon; }
+        stays.push({ type: 'stay', from: i, to: j - 1, start: pts[i].t, end: departure,
+          lat: lat / (j - i), lon: lon / (j - i), ongoing: j >= pts.length && endCap === now });
+        i = j;
+      } else {
+        i++;
+      }
+    }
+
+    const entries = [];
+    const MIN_LEG_M = 250;
+    const addTrip = (a, b) => {
+      // Trip covers points a..b inclusive (a = last point of the previous stay, b = first of the next).
+      // It is split into legs wherever the mode changes for a meaningful distance.
+      if (b <= a) return;
+      const legs = [];
+      for (let k = a + 1; k <= b; k++) {
+        const d = dist(pts[k - 1], pts[k]);
+        const m = modeKey(pts[k].act === 'still' ? pts[k - 1].act : pts[k].act);
+        const last = legs[legs.length - 1];
+        if (last && last.mode === m) { last.to = k; last.distance += d; }
+        else legs.push({ mode: m, from: k - 1, to: k, distance: d });
+      }
+      // Fold short legs into a neighbour so GPS noise doesn't create tiny trips.
+      for (let changed = true; changed && legs.length > 1;) {
+        changed = false;
+        let idx = -1, min = MIN_LEG_M;
+        legs.forEach((l, n) => { if (l.distance < min) { min = l.distance; idx = n; } });
+        if (idx < 0) break;
+        const l = legs[idx];
+        const into = idx > 0 ? legs[idx - 1] : legs[idx + 1];
+        into.from = Math.min(into.from, l.from);
+        into.to = Math.max(into.to, l.to);
+        into.distance += l.distance;
+        legs.splice(idx, 1);
+        // Merge now-adjacent legs of the same mode.
+        for (let n = legs.length - 1; n > 0; n--) {
+          if (legs[n].mode === legs[n - 1].mode) {
+            legs[n - 1].to = legs[n].to; legs[n - 1].distance += legs[n].distance; legs.splice(n, 1);
+          }
+        }
+        changed = true;
+      }
+      for (const leg of legs) {
+        if (leg.distance < 1) continue;
+        const prev = entries[entries.length - 1];
+        const start = prev && prev.type === 'stay' && leg.from === a ? prev.end : pts[leg.from].t;
+        entries.push({ type: 'trip', from: leg.from, to: leg.to, start, end: pts[leg.to].t,
+          distance: leg.distance, mode: leg.mode });
+      }
+    };
+
+    let cursor = 0;
+    for (const s of stays) {
+      addTrip(cursor, s.from);
+      entries.push(s);
+      cursor = s.to;
+    }
+    addTrip(cursor, pts.length - 1);
+
+    // Clip to the chosen day.
+    const ds = dayStart.getTime();
+    for (const e of entries) {
+      if (e.start < ds) { e.clipped = true; e.start = ds; }
+    }
+    return entries.filter((e) => e.end > ds);
+  }
+
+  // ---------- Rendering ----------
+  async function loadDay() {
+    if (!sb || !$('day').value) return;
+    const seq = ++loadSeq;
+    const dayStart = fromInputDate($('day').value);
+    const dayEnd = addDays(dayStart, 1);
+    $('status').textContent = 'Loading…';
+    let pts;
+    try {
+      pts = await fetchDay(dayStart, dayEnd);
+    } catch (err) {
+      if (seq !== loadSeq) return;
+      const msg = err.message || String(err);
+      if (/jwt|token|auth/i.test(msg)) { showLogin(); return; }
+      $('status').textContent = 'Error: ' + msg;
+      return;
+    }
+    if (seq !== loadSeq) return;
+    render(pts, dayStart, dayEnd);
+  }
+
+  function render(pts, dayStart, dayEnd) {
+    dataLayer.clearLayers();
+    const list = $('timeline');
+    list.innerHTML = '';
+    $('totals').innerHTML = '';
+    $('modes').innerHTML = '';
+    const dayPts = pts.filter((p) => !p.prevDay);
+    const title = dayStart.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    $('status').textContent = `${title} · ${dayPts.length} points`;
+
+    if (!pts.length) {
+      list.innerHTML = '<li class="empty">No points recorded on this day.</li>';
+      lastEntries = [];
+      return;
+    }
+
+    const entries = buildTimeline(pts, dayStart, dayEnd);
+    lastEntries = entries;
+
+    // Route, coloured by activity (only the trip parts, so stays stay tidy).
+    for (const e of entries) {
+      if (e.type !== 'trip') continue;
+      const line = pts.slice(e.from, e.to + 1).map((p) => [p.lat, p.lon]);
+      L.polyline(line, { color: css(MODES[e.mode].color), weight: 5, opacity: 0.85 }).addTo(dataLayer);
+    }
+
+    // Individual points.
+    for (const p of pts) {
+      const color = css(MODES[modeKey(p.act)].color) || '#888';
+      const bits = [`<b>${p.prevDay ? new Date(p.t).toLocaleString() : fmtTime(p.t)}</b>`];
+      if (p.act) bits.push(MODES[p.act] ? MODES[p.act].label : p.act);
+      if (p.speed != null) bits.push((p.speed * 3.6).toFixed(0) + ' km/h');
+      if (p.acc != null) bits.push('±' + Math.round(p.acc) + ' m');
+      L.circleMarker([p.lat, p.lon], { radius: 4, weight: 1, color: '#fff', fillColor: color, fillOpacity: 0.95 })
+        .bindPopup(bits.join(' · ')).addTo(dataLayer);
+    }
+
+    // Stay markers.
+    let stayNo = 0;
+    for (const e of entries) {
+      if (e.type !== 'stay') continue;
+      e.no = ++stayNo;
+      const icon = L.divIcon({ className: '', html: `<div class="stay-pin">${e.no}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+      e.marker = L.marker([e.lat, e.lon], { icon, zIndexOffset: 1000 })
+        .bindPopup(`<b>Stay ${e.no}</b><br>${stayTimes(e)}<br>${fmtDur(e.end - e.start)}`)
+        .addTo(dataLayer);
+    }
+
+    // Totals.
+    const trips = entries.filter((e) => e.type === 'trip');
+    const stays = entries.filter((e) => e.type === 'stay');
+    const totalDist = trips.reduce((s, e) => s + e.distance, 0);
+    const moving = trips.reduce((s, e) => s + (e.end - e.start), 0);
+    $('totals').innerHTML =
+      `<div class="stat"><b>${fmtKm(totalDist)}</b><span>distance</span></div>` +
+      `<div class="stat"><b>${fmtDur(moving)}</b><span>moving</span></div>` +
+      `<div class="stat"><b>${stays.length}</b><span>${stays.length === 1 ? 'place' : 'places'}</span></div>`;
+    const modeTotals = {};
+    for (const t of trips) modeTotals[t.mode] = (modeTotals[t.mode] || 0) + t.distance;
+    $('modes').innerHTML = Object.keys(MODES).filter((m) => modeTotals[m] >= 1)
+      .map((m) => `<span><span class="dot" style="background:${css(MODES[m].color)}"></span>${MODES[m].label} ${fmtKm(modeTotals[m])}</span>`)
+      .join('');
+
+    // Timeline list.
+    for (const e of entries) {
+      const li = document.createElement('li');
+      if (e.type === 'stay') {
+        li.style.borderLeftColor = css('--stay');
+        li.innerHTML = `<div class="icon">📍</div><div><div class="what">Stay ${e.no} · ${fmtDur(e.end - e.start)}</div>` +
+          `<div class="when">${stayTimes(e)}</div></div>`;
+        li.addEventListener('click', () => { select(li); map.setView([e.lat, e.lon], Math.max(map.getZoom(), 16)); e.marker.openPopup(); });
+      } else {
+        const m = MODES[e.mode];
+        li.style.borderLeftColor = css(m.color);
+        li.innerHTML = `<div class="icon">${m.icon}</div><div><div class="what">${m.label} · ${fmtKm(e.distance)}</div>` +
+          `<div class="when">${fmtTime(e.start)} – ${fmtTime(e.end)} · ${fmtDur(e.end - e.start)}</div></div>`;
+        li.addEventListener('click', () => {
+          select(li);
+          const b = L.latLngBounds(pts.slice(e.from, e.to + 1).map((p) => [p.lat, p.lon]));
+          map.fitBounds(b, { padding: [30, 30], maxZoom: 17 });
+        });
+      }
+      list.appendChild(li);
+    }
+    if (!entries.length) list.innerHTML = '<li class="empty">Not enough points to build a timeline.</li>';
+
+    const bounds = dataLayer.getBounds();
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 });
+  }
+
+  function stayTimes(e) {
+    const from = e.clipped ? 'from midnight' : fmtTime(e.start);
+    const to = e.ongoing ? 'now' : (e.end >= addDays(fromInputDate($('day').value), 1).getTime() ? 'midnight' : fmtTime(e.end));
+    return `${from} – ${to}`;
+  }
+
+  function select(li) {
+    for (const x of $('timeline').children) x.classList.remove('active');
+    li.classList.add('active');
+    if (window.matchMedia('(max-width: 760px)').matches) $('map').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  if (typeof supabase === 'undefined' || typeof L === 'undefined') {
+    document.body.innerHTML = '<div class="screen"><div class="form"><h1>Could not load</h1><p>The map and database libraries could not be downloaded. Check your internet connection and reload.</p></div></div>';
+    return;
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
