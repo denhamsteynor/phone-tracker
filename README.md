@@ -113,9 +113,9 @@ Using it:
 
 ### Place names
 
-Each stay is named automatically from OpenStreetMap: if you were clearly at one place (for example inside the grounds of a tennis club), its name is shown. If the viewer isn't sure, it shows its best guess with an orange **?**. Tap it to pick from nearby places, the street address, or type your own name (e.g. "Home"). Tap ✎ to rename any stay. Names you choose are saved to your database and used automatically for every later visit within 100 m, on any device.
+Each stay is named automatically from OpenStreetMap: if you were clearly at one place (for example inside the grounds of a tennis club), its name is shown. If the viewer isn't sure, it shows its best guess with an orange **?**. Tap it to pick from nearby places, the street address, or type your own name (e.g. "Home"). Tap ✎ to rename any stay. Names you choose are saved to your database and used automatically for every later visit within 100 m, on any device. Confident guesses are saved too (marked as automatic, within 75 m), so every device shows them straight away. To correct one, tap ✎ and pick or type the right name, which then counts as your own. Or tap **Remove this automatic name** and it won't be guessed there again. Names you chose always win over automatic ones.
 
-Saving names needs the `places` table. If you set up Supabase before it existed, run `supabase/schema.sql` again in the SQL Editor. It's safe to re-run and doesn't touch your points.
+Saving names needs the `places` table (with its `source` column, used for automatic names). If you set up Supabase before these existed, run `supabase/schema.sql` again in the SQL Editor. It's safe to re-run and doesn't touch your points.
 
 ### Importing your old Google Timeline
 

@@ -75,3 +75,7 @@ create policy "places_delete_own" on public.places
 revoke all on table public.places from anon;
 revoke all on table public.places from authenticated;
 grant select, insert, update, delete on table public.places to authenticated;
+
+-- Where a place name came from: 'user' (you chose it), 'auto' (confident guess saved
+-- automatically) or 'rejected' (an automatic name you removed, so it isn't guessed again).
+alter table public.places add column if not exists source text not null default 'user';

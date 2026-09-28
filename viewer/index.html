@@ -672,29 +672,66 @@
   let places = [];
   let placesLoaded = false;
   let placesTableMissing = false;
+  let placesHaveSource = true; // false until schema.sql has been re-run to add places.source
+  const AUTO_RADIUS_M = 75;
   let placeEntry = null; // stay being named in the dialog
 
   const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   async function loadPlaces() {
     placesLoaded = true;
-    const { data, error } = await sb.from('places').select('id,name,lat,lon,radius_m');
+    let { data, error } = await sb.from('places').select('id,name,lat,lon,radius_m,source');
+    if (error && /source/i.test(error.message || '')) {
+      // Older table without the "source" column: everything counts as a name you chose.
+      placesHaveSource = false;
+      ({ data, error } = await sb.from('places').select('id,name,lat,lon,radius_m'));
+    }
     if (error) {
       placesTableMissing = true;
       console.warn('places table not available:', error.message);
       places = [];
       return;
     }
-    places = data || [];
+    places = (data || []).map((p) => ({ ...p, source: p.source || 'user' }));
   }
 
+  /** Nearest saved name for a spot. Names you chose beat automatic ones; removed guesses are ignored. */
   function savedPlaceFor(lat, lon) {
-    let best = null, bestD = Infinity;
-    for (const p of places) {
-      const d = dist({ lat, lon }, p);
-      if (d <= (p.radius_m || 100) && d < bestD) { best = p; bestD = d; }
-    }
-    return best;
+    const nearest = (source) => {
+      let best = null, bestD = Infinity;
+      for (const p of places) {
+        if (p.source !== source) continue;
+        const d = dist({ lat, lon }, p);
+        if (d <= (p.radius_m || 100) && d < bestD) { best = p; bestD = d; }
+      }
+      return best;
+    };
+    return nearest('user') || nearest('auto');
+  }
+
+  /** Did you remove this automatic name here before? Then don't guess it again. */
+  function wasRejected(name, lat, lon) {
+    return places.some((p) => p.source === 'rejected' && p.name === name && dist({ lat, lon }, p) <= (p.radius_m || AUTO_RADIUS_M));
+  }
+
+  /** Saves a confident guess to the database so every device uses it. Silently skipped if that isn't possible. */
+  async function autoSavePlace(e) {
+    const existing = savedPlaceFor(e.lat, e.lon);
+    if (existing) { e.place = existing; showStayName(e); return; } // e.g. saved moments ago for another stay
+    if (!placesHaveSource || placesTableMissing) return;
+    try {
+      const { data: u } = await sb.auth.getUser();
+      const { data, error } = await sb.from('places')
+        .insert({ user_id: u.user.id, name: e.guess.name, lat: e.lat, lon: e.lon, radius_m: AUTO_RADIUS_M, source: 'auto' })
+        .select('id,name,lat,lon,radius_m,source').single();
+      if (error) {
+        if (/source/i.test(error.message || '')) placesHaveSource = false;
+        return;
+      }
+      places.push(data);
+      e.place = data;
+      showStayName(e);
+    } catch {}
   }
 
   function showStayName(e) {
@@ -702,7 +739,8 @@
     if (!what) return;
     let html;
     if (e.place) {
-      html = `${esc(e.place.name)} <button class="rename" title="Rename">✎</button>`;
+      const tip = e.place.source === 'auto' ? 'Named automatically. Not right? Tap to correct' : 'Rename';
+      html = `${esc(e.place.name)} <button class="rename" title="${tip}">✎</button>`;
     } else if (e.guess && e.guess.confident) {
       html = `${esc(e.guess.name)} <button class="rename" title="Not right? Choose the place">✎</button>`;
     } else if (e.guess) {
@@ -873,10 +911,15 @@ out tags;`;
     for (const e of stays) {
       const cands = geoCache()[geoKey('poi', e.lat, e.lon)] || [];
       const { best, confident } = judge(cands);
-      if (confident) e.guess = { name: best.name, confident: true, cands };
+      if (confident && !wasRejected(best.name, e.lat, e.lon)) e.guess = { name: best.name, confident: true, cands };
       else if (best && best.score <= 60) e.guess = { name: best.name, confident: false, cands };
       else needAddress.push(e);
       if (e.guess) showStayName(e);
+    }
+    // Save confident guesses so every device gets them (one at a time, so neighbouring stays share one entry).
+    for (const e of stays) {
+      if (seq !== loadSeq) return;
+      if (e.guess && e.guess.confident && !e.place) await autoSavePlace(e);
     }
     // 3) Street addresses only where there's no good nearby place (limited to 1 per second).
     for (const e of needAddress) {
@@ -896,6 +939,10 @@ out tags;`;
     $('placeError').textContent = '';
     $('placeCustom').value = e.place ? e.place.name : '';
     $('placeForget').classList.toggle('hidden', !e.place);
+    $('placeForget').textContent = e.place && e.place.source === 'auto' ? 'Remove this automatic name' : 'Forget this saved name';
+    if (e.place && e.place.source === 'auto') {
+      $('placeWhen').textContent += ` · named automatically as "${e.place.name}"`;
+    }
     $('placeChoices').innerHTML = '';
     $('placeStatus').textContent = 'Looking for places nearby…';
     $('placeDlg').classList.remove('hidden');
@@ -929,16 +976,18 @@ out tags;`;
     try {
       const existing = e.place || savedPlaceFor(e.lat, e.lon);
       if (existing) {
-        const { error } = await sb.from('places').update({ name }).eq('id', existing.id);
+        // Correcting an automatic name turns it into one you chose (and widens it to the normal 100 m).
+        const change = placesHaveSource ? { name, source: 'user', radius_m: Math.max(existing.radius_m || 0, 100) } : { name };
+        const { error } = await sb.from('places').update(change).eq('id', existing.id);
         if (error) throw error;
-        existing.name = name;
+        Object.assign(existing, change);
       } else {
         const { data: u } = await sb.auth.getUser();
         const { data, error } = await sb.from('places')
-          .insert({ user_id: u.user.id, name, lat: e.lat, lon: e.lon, radius_m: 100 })
-          .select('id,name,lat,lon,radius_m').single();
+          .insert({ user_id: u.user.id, name, lat: e.lat, lon: e.lon, radius_m: 100, ...(placesHaveSource ? { source: 'user' } : {}) })
+          .select(placesHaveSource ? 'id,name,lat,lon,radius_m,source' : 'id,name,lat,lon,radius_m').single();
         if (error) throw error;
-        places.push(data);
+        places.push({ ...data, source: data.source || 'user' });
       }
     } catch (err) {
       $('placeError').textContent = 'Could not save: ' + (err.message || err) +
@@ -963,12 +1012,21 @@ out tags;`;
   $('placeForget').addEventListener('click', async () => {
     const e = placeEntry;
     if (!e || !e.place) return;
-    const { error } = await sb.from('places').delete().eq('id', e.place.id);
-    if (error) { $('placeError').textContent = 'Could not delete: ' + error.message; return; }
-    places = places.filter((p) => p.id !== e.place.id);
+    const pl = e.place;
+    if (pl.source === 'auto') {
+      // Keep a note of the wrong guess so it isn't made again here.
+      const { error } = await sb.from('places').update({ source: 'rejected' }).eq('id', pl.id);
+      if (error) { $('placeError').textContent = 'Could not remove: ' + error.message; return; }
+      pl.source = 'rejected';
+    } else {
+      const { error } = await sb.from('places').delete().eq('id', pl.id);
+      if (error) { $('placeError').textContent = 'Could not delete: ' + error.message; return; }
+      places = places.filter((p) => p.id !== pl.id);
+    }
     $('placeDlg').classList.add('hidden');
+    for (const x of lastEntries) if (x.type === 'stay' && x.place === pl) { x.place = null; x.guess = null; }
     refreshPlaceNames();
-    if (!e.guess) guessStayNames([e], loadSeq);
+    guessStayNames(lastEntries.filter((x) => x.type === 'stay' && !x.place && !x.guess), loadSeq);
   });
 
   // ---------- Import Google Timeline ----------
