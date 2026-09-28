@@ -739,45 +739,87 @@
     return 'place';
   }
 
-  async function overpassCandidates(lat, lon) {
-    const key = geoKey('poi', lat, lon);
-    const cached = geoCache()[key];
-    if (cached) return cached;
-    const keys = 'amenity|leisure|shop|tourism|office|healthcare|sport|club|craft|historic|railway|public_transport|aeroway';
-    const q = `[out:json][timeout:20];
-(
-  nwr(around:120,${lat},${lon})[name][~"^(${keys})$"~"."];
+  const OVERPASS_URLS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+  const OSM_KEYS = 'amenity|leisure|shop|tourism|office|healthcare|sport|club|craft|historic|railway|public_transport|aeroway';
+
+  async function fetchWithTimeout(url, opts = {}, ms = 12000) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    try { return await fetch(url, { ...opts, signal: ctl.signal }); } finally { clearTimeout(timer); }
+  }
+
+  async function overpass(query) {
+    for (const url of OVERPASS_URLS) {
+      try {
+        const r = await fetchWithTimeout(url, { method: 'POST', body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        if (r.ok) return await r.json();
+      } catch {}
+    }
+    return null;
+  }
+
+  function pointQuery(lat, lon) {
+    return `(
+  nwr(around:120,${lat},${lon})[name][~"^(${OSM_KEYS})$"~"."];
   nwr(around:50,${lat},${lon})[name][building];
 );
 out center tags 40;
 is_in(${lat},${lon})->.a;
-area.a[name][~"^(${keys}|building|landuse|man_made|natural)$"~"."];
+area.a[name][~"^(${OSM_KEYS}|building|landuse|man_made|natural)$"~"."];
 out tags;`;
-    let json = null;
-    for (const url of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
-      try {
-        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        if (r.ok) { json = await r.json(); break; }
-      } catch {}
-    }
-    if (!json) return null;
+  }
+
+  /** Ranks named OSM elements near a point; lower score = better match. */
+  function scoreCandidates(lat, lon, elements) {
     const byName = new Map();
-    for (const el of json.elements || []) {
+    for (const el of elements) {
       const tags = el.tags || {};
       if (!tags.name) continue;
       const inside = el.type === 'area';
       const c = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
       const d = inside ? 0 : c ? dist({ lat, lon }, c) : 999;
-      const type = placeType(tags);
-      // Lower score = better. Being inside a named site (club, park, school...) is strong evidence.
+      // Being inside a named site (club, park, school...) is strong evidence.
       let score = d;
       if (inside) score = tags.landuse || tags.natural ? 70 : tags.building && !tags.amenity && !tags.leisure && !tags.shop ? 25 : 8;
       else if (tags.building && !tags.amenity && !tags.leisure && !tags.shop && !tags.tourism && !tags.office) score += 25;
       if (tags.public_transport || tags.railway === 'stop' || tags.highway === 'bus_stop') score += 30;
       const prev = byName.get(tags.name);
-      if (!prev || score < prev.score) byName.set(tags.name, { name: tags.name, type, dist: Math.round(d), inside, score: Math.round(score) });
+      if (!prev || score < prev.score) byName.set(tags.name, { name: tags.name, type: placeType(tags), dist: Math.round(d), inside, score: Math.round(score) });
     }
-    const cands = [...byName.values()].sort((a, b) => a.score - b.score).slice(0, 8);
+    return [...byName.values()].sort((a, b) => a.score - b.score).slice(0, 8);
+  }
+
+  /** Looks up nearby places for many points in one request (falls back to one request per point). */
+  async function overpassBatch(points) {
+    const todo = points.filter((p) => !geoCache()[geoKey('poi', p.lat, p.lon)]);
+    for (let i = 0; i < todo.length; i += 8) {
+      const chunk = todo.slice(i, i + 8);
+      // Each point's results are preceded by a marker element so they can be told apart.
+      const q = '[out:json][timeout:25];\n' + chunk.map((p, n) => `make marker idx="${n}";\nout;\n${pointQuery(p.lat, p.lon)}`).join('\n');
+      const json = await overpass(q);
+      const groups = chunk.map(() => []);
+      let cur = -1, sawMarker = false;
+      for (const el of (json && json.elements) || []) {
+        if (el.type === 'marker') { cur = Number(el.tags && el.tags.idx); sawMarker = true; continue; }
+        if (cur >= 0 && groups[cur]) groups[cur].push(el);
+      }
+      if (json && sawMarker) {
+        chunk.forEach((p, n) => geoCacheSet(geoKey('poi', p.lat, p.lon), scoreCandidates(p.lat, p.lon, groups[n])));
+      } else if (json) {
+        // The server answered but not in the expected shape: ask about each point separately.
+        for (const p of chunk) await overpassCandidates(p.lat, p.lon);
+      }
+      // No answer at all (servers down): leave uncached; addresses are used instead.
+    }
+  }
+
+  async function overpassCandidates(lat, lon) {
+    const key = geoKey('poi', lat, lon);
+    const cached = geoCache()[key];
+    if (cached) return cached;
+    const json = await overpass('[out:json][timeout:20];\n' + pointQuery(lat, lon));
+    if (!json) return null;
+    const cands = scoreCandidates(lat, lon, json.elements || []);
     geoCacheSet(key, cands);
     return cands;
   }
@@ -788,7 +830,7 @@ out tags;`;
     if (key in c) return c[key];
     let out = null;
     try {
-      const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${lat}&lon=${lon}`, { headers: { 'Accept-Language': navigator.language || 'en' } });
+      const r = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${lat}&lon=${lon}`, { headers: { 'Accept-Language': navigator.language || 'en' } });
       if (r.ok) {
         const j = await r.json();
         const a = j.address || {};
@@ -804,11 +846,16 @@ out tags;`;
 
   const addressLabel = (a) => a ? (a.street ? a.street + (a.area ? ', ' + a.area : '') : a.area) : null;
 
+  function judge(cands) {
+    const best = cands[0], second = cands[1];
+    const confident = !!best && best.score <= 35 && (!second || second.score - best.score >= 25);
+    return { best, confident };
+  }
+
   /** Best guess for a stay: {name, confident, cands, address}. */
   async function guessPlace(lat, lon) {
     const cands = (await queued(() => overpassCandidates(lat, lon))) || [];
-    const best = cands[0], second = cands[1];
-    const confident = !!best && best.score <= 35 && (!second || second.score - best.score >= 25);
+    const { best, confident } = judge(cands);
     if (confident) return { name: best.name, confident: true, cands };
     const address = await queued(() => addressFor(lat, lon));
     const name = best && best.score <= 60 ? best.name : (address && (address.name || addressLabel(address))) || (best && best.name) || null;
@@ -816,11 +863,28 @@ out tags;`;
   }
 
   async function guessStayNames(stays, seq) {
+    stays = stays.filter((e) => !e.place);
+    if (!stays.length) return;
+    // 1) One request for all of the day's stays.
+    await queued(() => overpassBatch(stays));
+    if (seq !== loadSeq) return;
+    // 2) Show what we know straight away.
+    const needAddress = [];
     for (const e of stays) {
+      const cands = geoCache()[geoKey('poi', e.lat, e.lon)] || [];
+      const { best, confident } = judge(cands);
+      if (confident) e.guess = { name: best.name, confident: true, cands };
+      else if (best && best.score <= 60) e.guess = { name: best.name, confident: false, cands };
+      else needAddress.push(e);
+      if (e.guess) showStayName(e);
+    }
+    // 3) Street addresses only where there's no good nearby place (limited to 1 per second).
+    for (const e of needAddress) {
       if (seq !== loadSeq) return;
-      if (e.place) continue;
-      e.guess = await guessPlace(e.lat, e.lon);
+      const cands = geoCache()[geoKey('poi', e.lat, e.lon)] || [];
+      const address = await queued(() => addressFor(e.lat, e.lon));
       if (seq !== loadSeq) return;
+      e.guess = { name: (address && (address.name || addressLabel(address))) || (cands[0] && cands[0].name) || null, confident: false, cands, address };
       showStayName(e);
     }
   }
