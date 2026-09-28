@@ -520,7 +520,46 @@
     render(pts, dayStart, dayEnd);
   }
 
+  /**
+   * Drops fixes that would draw false journeys: very inaccurate ones (mast/Wi-Fi positions)
+   * and "spikes" that jump far away and straight back, or faster than any realistic travel.
+   */
+  const MAX_ACCURACY_M = 200;
+  const MAX_SPEED_MPS = 70; // ~250 km/h
+  function cleanPoints(pts) {
+    let out = pts.filter((p) => p.acc == null || p.acc <= MAX_ACCURACY_M);
+    for (let pass = 0; pass < 3; pass++) {
+      const keep = [];
+      let removed = false;
+      for (let i = 0; i < out.length; i++) {
+        const p = out[i];
+        const prev = keep[keep.length - 1];
+        const next = out[i + 1];
+        if (prev && !p.prevDay) {
+          const dPrev = dist(prev, p);
+          const dt = Math.max(1, (p.t - prev.t) / 1000);
+          const tooFast = dPrev > 500 && dPrev / dt > MAX_SPEED_MPS;
+          let spike = false;
+          if (next) {
+            const dNext = dist(p, next);
+            // Out and back: far from both neighbours, while the neighbours are close to each other,
+            // and too quick to have been a real trip there and back.
+            const span = Math.max(1, (next.t - prev.t) / 1000);
+            spike = p.act !== 'still' && dPrev > 300 && dNext > 300 &&
+              dist(prev, next) < 0.35 * (dPrev + dNext) && (dPrev + dNext) / span > 15;
+          }
+          if (tooFast || spike) { removed = true; continue; }
+        }
+        keep.push(p);
+      }
+      out = keep;
+      if (!removed) break;
+    }
+    return out;
+  }
+
   function render(pts, dayStart, dayEnd) {
+    pts = cleanPoints(pts);
     dataLayer.clearLayers();
     const list = $('timeline');
     list.innerHTML = '';
@@ -951,7 +990,8 @@ out tags;`;
     if (Array.isArray(json.rawSignals)) {
       for (const r of json.rawSignals) {
         const p = r.position;
-        if (p) add(p.timestamp, latLng(p.LatLng || p.latLng), { acc: p.accuracyMeters, speed: p.speedMetersPerSecond });
+        // Skip mast/Wi-Fi fixes that are hundreds of metres out; they draw false journeys.
+        if (p && !(Number(p.accuracyMeters) > 200)) add(p.timestamp, latLng(p.LatLng || p.latLng), { acc: p.accuracyMeters, speed: p.speedMetersPerSecond });
       }
     }
 
