@@ -456,6 +456,8 @@ class MainActivity : Activity() {
                 }
             )
         }
+        val recent = prefs.recentModeChanges()
+        if (recent.isNotEmpty()) sb.append("\n\nRecent mode changes:\n").append(recent.joinToString("\n"))
         val err = prefs.lastError
         if (!err.isNullOrEmpty()) sb.append("\nLast error (").append(ago(prefs.lastErrorAt)).append("): ").append(err)
         statusText.text = sb.toString()

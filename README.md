@@ -85,7 +85,9 @@ Points are saved on the phone first and uploaded about every 15 minutes whenever
 | Cycling | cycling, or 3–7 m/s | every 15 s | 30 m |
 | Driving | in a vehicle, or over 7 m/s | every 10 s | 50 m |
 
-The app starts in Walking mode. When it's still and a check shows you've moved, it switches back up straight away.
+The app starts in Walking mode. When it's still and the phone senses walking or driving, or a check shows you've moved, it switches back up straight away. GPS must then confirm real movement within 2 minutes, or it drops back to Still. Walking around the house doesn't keep the GPS on. A reading only counts as movement if it moved further than the GPS's own margin of error.
+
+The status screen shows how long the app spent in each mode today, plus the last few mode changes with their reasons. If you're mostly at home but it shows hours of Walking, something is keeping the GPS on.
 
 ---
 

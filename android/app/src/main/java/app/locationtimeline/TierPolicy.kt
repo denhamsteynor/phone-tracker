@@ -79,8 +79,17 @@ object TierPolicy {
         return t
     }
 
-    fun shouldGoStill(tier: Tier, lastMovementAt: Long, now: Long): Boolean =
-        tier != Tier.STILL && now - lastMovementAt >= tier.stillAfterMs
+    /**
+     * After leaving Still (e.g. the phone sensed a few steps around the house), GPS must confirm real
+     * movement within this time, or tracking drops straight back to low-power Still.
+     */
+    const val CONFIRM_MS = 2 * 60_000L
+
+    fun shouldGoStill(tier: Tier, lastMovementAt: Long, now: Long, movementConfirmed: Boolean = true): Boolean {
+        if (tier == Tier.STILL) return false
+        val wait = if (movementConfirmed) tier.stillAfterMs else minOf(CONFIRM_MS, tier.stillAfterMs)
+        return now - lastMovementAt >= wait
+    }
 
     /** Great-circle distance in metres. */
     fun distanceM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {

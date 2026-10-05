@@ -83,6 +83,10 @@ class TierPolicyTest {
         assertFalse(TierPolicy.shouldGoStill(Tier.VEHICLE, t0, t0 + 299_999))
         assertTrue(TierPolicy.shouldGoStill(Tier.VEHICLE, t0, t0 + 300_000))
         assertFalse(TierPolicy.shouldGoStill(Tier.STILL, t0, t0 + 10_000_000))
+        // Unconfirmed movement (a few steps indoors) gives up after 2 minutes.
+        assertFalse(TierPolicy.shouldGoStill(Tier.WALK, t0, t0 + 119_999, movementConfirmed = false))
+        assertTrue(TierPolicy.shouldGoStill(Tier.WALK, t0, t0 + 120_000, movementConfirmed = false))
+        assertTrue(TierPolicy.shouldGoStill(Tier.VEHICLE, t0, t0 + 120_000, movementConfirmed = false))
     }
 
     @Test

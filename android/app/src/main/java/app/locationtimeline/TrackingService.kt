@@ -78,6 +78,8 @@ class TrackingService : Service() {
         private set
     private var lastMovementAt = 0L
     private var tierSince = 0L
+    /** False after leaving Still until GPS shows real movement; see [TierPolicy.CONFIRM_MS]. */
+    private var movementConfirmed = false
     private var lastLat = Double.NaN
     private var lastLon = Double.NaN
     private var activityPendingIntent: PendingIntent? = null
@@ -130,6 +132,8 @@ class TrackingService : Service() {
             tier = Tier.WALK
             lastMovementAt = System.currentTimeMillis()
             tierSince = lastMovementAt
+            movementConfirmed = false
+            prefs.logModeChange("Tracking started (Walking until movement is confirmed)")
             prefs.lastRecorded()?.let { (lat, lon, _) -> lastLat = lat; lastLon = lon }
             prefs.tierKey = tier.key
             requestLocationUpdates()
@@ -203,7 +207,10 @@ class TrackingService : Service() {
             val fast = speedTier != null && speedTier.ordinal >= Tier.BIKE.ordinal
             if (moved || fast) {
                 lastMovementAt = now
-                setTier(TierPolicy.afterMove(tier, speedTier))
+                val wasStill = tier == Tier.STILL
+                setTier(TierPolicy.afterMove(tier, speedTier), if (wasStill) "moved ${dist.toInt()} m" else "GPS speed")
+                // Waking from Still on one rough fix still needs confirming; otherwise this is real movement.
+                movementConfirmed = !wasStill
             }
             if (moved) record(loc, accuracy)
         }
@@ -234,19 +241,26 @@ class TrackingService : Service() {
     }
 
     private fun checkStill(now: Long) {
-        if (started && TierPolicy.shouldGoStill(tier, lastMovementAt, now)) setTier(Tier.STILL)
+        if (started && TierPolicy.shouldGoStill(tier, lastMovementAt, now, movementConfirmed)) {
+            setTier(Tier.STILL, if (movementConfirmed) "no movement for a while" else "no real movement after a few steps")
+        }
     }
 
     /** Called by [ActivityTransitionReceiver] with a DetectedActivity type the phone just entered. */
     fun onActivity(type: Int) {
         if (!started) return
         val t = TierPolicy.tierForActivity(type) ?: return
-        if (t != Tier.STILL) lastMovementAt = System.currentTimeMillis()
-        setTier(t)
+        if (t != Tier.STILL) {
+            lastMovementAt = System.currentTimeMillis()
+            // The phone sensing walking/driving is only a hint until GPS confirms you're going somewhere.
+            if (tier == Tier.STILL) movementConfirmed = false
+        }
+        setTier(t, "phone sensed " + t.label.lowercase())
     }
 
-    private fun setTier(newTier: Tier) {
+    private fun setTier(newTier: Tier, reason: String) {
         if (newTier == tier) return
+        prefs.logModeChange("${tier.label} → ${newTier.label} (${reason})")
         Log.i(TAG, "Mode ${tier.label} -> ${newTier.label}")
         accountModeTime()
         tier = newTier

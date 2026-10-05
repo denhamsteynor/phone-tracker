@@ -97,6 +97,16 @@ class Prefs(context: Context) {
         return Tier.entries.associate { it.key to sp.getLong("mode_ms_${it.key}", 0L) }
     }
 
+    /** Keeps the last few mode changes with their reasons, newest first, for the status screen. */
+    fun logModeChange(text: String) {
+        val time = java.time.LocalTime.now().withNano(0).withSecond(0)
+        val lines = (listOf("$time  $text") + recentModeChanges()).take(6)
+        sp.edit().putString("mode_log", lines.joinToString("\n")).apply()
+    }
+
+    fun recentModeChanges(): List<String> =
+        sp.getString("mode_log", null)?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+
     var lastFixAt: Long
         get() = sp.getLong("last_fix_at", 0L)
         set(v) = sp.edit().putLong("last_fix_at", v).apply()
