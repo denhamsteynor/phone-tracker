@@ -61,11 +61,15 @@ object TierPolicy {
         }
     }
 
-    /** Is this fix far enough from the last recorded point to count as real movement? */
+    /**
+     * Is this fix far enough from the last recorded point to count as real movement?
+     * It must also beat the fix's own uncertainty: indoors, GPS readings wander tens of metres while
+     * the phone sits still, and treating that as movement would keep the GPS on at full power.
+     */
     fun isMove(tier: Tier, distFromLastRecordedM: Double, accuracy: Float): Boolean {
         if (distFromLastRecordedM < tier.minDistanceM) return false
-        if (tier == Tier.STILL && distFromLastRecordedM < 2.0 * accuracy) return false
-        return true
+        val factor = if (tier == Tier.STILL) 2.0 else 1.5
+        return distFromLastRecordedM >= factor * accuracy
     }
 
     /** Tier to use after movement was detected. Leaving STILL goes at least to WALK; speed can bump it up. */

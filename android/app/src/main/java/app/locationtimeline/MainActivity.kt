@@ -447,6 +447,15 @@ class MainActivity : Activity() {
         sb.append("Last fix: ").append(ago(prefs.lastFixAt)).append('\n')
         sb.append("Points waiting to upload: ").append(waiting).append('\n')
         sb.append("Last upload: ").append(lastUpload)
+        val modeTimes = prefs.modeTimesToday().filterValues { it >= 60_000L }
+        if (modeTimes.isNotEmpty()) {
+            sb.append("\nToday: ").append(
+                Tier.entries.filter { it.key in modeTimes }.joinToString(" · ") { t ->
+                    val m = modeTimes.getValue(t.key) / 60_000L
+                    t.label + " " + (if (m >= 60) "${m / 60}h ${m % 60}m" else "${m}m")
+                }
+            )
+        }
         val err = prefs.lastError
         if (!err.isNullOrEmpty()) sb.append("\nLast error (").append(ago(prefs.lastErrorAt)).append("): ").append(err)
         statusText.text = sb.toString()

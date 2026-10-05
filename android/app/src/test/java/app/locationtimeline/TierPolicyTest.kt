@@ -53,7 +53,10 @@ class TierPolicyTest {
     @Test
     fun moveDetection() {
         assertFalse(TierPolicy.isMove(Tier.WALK, 19.0, 5f))
-        assertTrue(TierPolicy.isMove(Tier.WALK, 20.0, 50f))
+        assertTrue(TierPolicy.isMove(Tier.WALK, 20.0, 10f))
+        assertFalse("indoor GPS wander is not movement", TierPolicy.isMove(Tier.WALK, 40.0, 30f))
+        assertTrue(TierPolicy.isMove(Tier.WALK, 45.0, 30f))
+        assertFalse(TierPolicy.isMove(Tier.VEHICLE, 60.0, 50f))
         assertFalse(TierPolicy.isMove(Tier.VEHICLE, 49.0, 5f))
         assertTrue(TierPolicy.isMove(Tier.VEHICLE, 50.0, 5f))
         assertFalse(TierPolicy.isMove(Tier.STILL, 149.0, 5f))

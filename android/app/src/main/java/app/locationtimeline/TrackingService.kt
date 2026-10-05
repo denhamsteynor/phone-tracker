@@ -77,6 +77,7 @@ class TrackingService : Service() {
     var tier: Tier = Tier.WALK
         private set
     private var lastMovementAt = 0L
+    private var tierSince = 0L
     private var lastLat = Double.NaN
     private var lastLon = Double.NaN
     private var activityPendingIntent: PendingIntent? = null
@@ -89,6 +90,7 @@ class TrackingService : Service() {
 
     private val periodicCheck = object : Runnable {
         override fun run() {
+            accountModeTime()
             checkStill(System.currentTimeMillis())
             handler.postDelayed(this, CHECK_INTERVAL_MS)
         }
@@ -127,6 +129,7 @@ class TrackingService : Service() {
             instance = this
             tier = Tier.WALK
             lastMovementAt = System.currentTimeMillis()
+            tierSince = lastMovementAt
             prefs.lastRecorded()?.let { (lat, lon, _) -> lastLat = lat; lastLon = lon }
             prefs.tierKey = tier.key
             requestLocationUpdates()
@@ -144,6 +147,7 @@ class TrackingService : Service() {
 
     fun stopTracking() {
         if (!started) return
+        accountModeTime()
         started = false
         handler.removeCallbacks(periodicCheck)
         fused.removeLocationUpdates(locationCallback)
@@ -166,10 +170,12 @@ class TrackingService : Service() {
         if (!hasLocationPermission(this)) return
         val priority = if (tier.highAccuracy) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY
         // No setMinUpdateDistanceMeters: we want callbacks even when not moving so still-detection keeps running.
-        val request = LocationRequest.Builder(priority, tier.intervalMs)
+        val builder = LocationRequest.Builder(priority, tier.intervalMs)
             .setMinUpdateIntervalMillis(tier.intervalMs / 2)
             .setWaitForAccurateLocation(false)
-            .build()
+        // While moving, let Android deliver fixes in small batches so the phone wakes up less often.
+        if (tier != Tier.STILL) builder.setMaxUpdateDelayMillis(tier.intervalMs * 4)
+        val request = builder.build()
         try {
             fused.removeLocationUpdates(locationCallback)
             fused.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
@@ -219,6 +225,14 @@ class TrackingService : Service() {
         prefs.saveLastRecorded(loc.latitude, loc.longitude, time)
     }
 
+    /** Adds the time since the last check to today's total for the current mode. */
+    private fun accountModeTime() {
+        if (!started) return
+        val now = System.currentTimeMillis()
+        prefs.addModeTime(tier.key, now - tierSince)
+        tierSince = now
+    }
+
     private fun checkStill(now: Long) {
         if (started && TierPolicy.shouldGoStill(tier, lastMovementAt, now)) setTier(Tier.STILL)
     }
@@ -234,6 +248,7 @@ class TrackingService : Service() {
     private fun setTier(newTier: Tier) {
         if (newTier == tier) return
         Log.i(TAG, "Mode ${tier.label} -> ${newTier.label}")
+        accountModeTime()
         tier = newTier
         prefs.tierKey = newTier.key
         requestLocationUpdates()

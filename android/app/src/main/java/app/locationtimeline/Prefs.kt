@@ -76,6 +76,27 @@ class Prefs(context: Context) {
         sp.edit().putString("last_error", message).putLong("last_error_at", System.currentTimeMillis()).apply()
     }
 
+    /** Adds time spent in a tracking mode to today's totals (shown on the status screen). */
+    fun addModeTime(tierKey: String, ms: Long) {
+        if (ms <= 0) return
+        val today = java.time.LocalDate.now().toString()
+        val e = sp.edit()
+        if (sp.getString("mode_day", null) != today) {
+            Tier.entries.forEach { e.remove("mode_ms_${it.key}") }
+            e.putString("mode_day", today)
+            e.putLong("mode_ms_$tierKey", ms)
+        } else {
+            e.putLong("mode_ms_$tierKey", sp.getLong("mode_ms_$tierKey", 0L) + ms)
+        }
+        e.apply()
+    }
+
+    /** Milliseconds spent in each mode today (by tier key). */
+    fun modeTimesToday(): Map<String, Long> {
+        if (sp.getString("mode_day", null) != java.time.LocalDate.now().toString()) return emptyMap()
+        return Tier.entries.associate { it.key to sp.getLong("mode_ms_${it.key}", 0L) }
+    }
+
     var lastFixAt: Long
         get() = sp.getLong("last_fix_at", 0L)
         set(v) = sp.edit().putLong("last_fix_at", v).apply()
