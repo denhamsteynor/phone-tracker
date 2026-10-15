@@ -113,6 +113,16 @@ Using it:
    - Small dots are individual recorded points. Click one to see its time, speed and accuracy.
    - The side panel shows the day's totals and a list of stays and trips. Click an entry to zoom to it.
 
+### Install it as an app
+
+The viewer is a progressive web app, so you can install it like a normal app, with its own icon and no browser bars:
+
+- **Android (Chrome):** open the website, then tap **Install app** in the header, or **⋮ → Install app / Add to Home screen**.
+- **iPhone (Safari):** tap **Share → Add to Home Screen**. You'll need to sign in once inside the installed app.
+- **Laptop (Chrome/Edge):** click the install icon at the right of the address bar.
+
+The installed app always loads the newest version when you're online.
+
 ### Place names
 
 Each stay is named automatically from OpenStreetMap: if you were clearly at one place (for example inside the grounds of a tennis club), its name is shown. If the viewer isn't sure, it shows its best guess with an orange **?**. Tap it to pick from nearby places, the street address, or type your own name (e.g. "Home"). Tap ✎ to rename any stay. Names you choose are saved to your database and used automatically for every later visit within 100 m, on any device. Confident guesses are saved too (marked as automatic, within 75 m), so every device shows them straight away. To correct one, tap ✎ and pick or type the right name, which then counts as your own. Or tap **Remove this automatic name** and it won't be guessed there again. Names you chose always win over automatic ones.

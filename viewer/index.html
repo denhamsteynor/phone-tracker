@@ -2,8 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Location Timeline</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1b1e23" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Timeline">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -79,7 +88,7 @@
   #app { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr; height: 100%; }
   header {
     grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: calc(8px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 8px calc(12px + env(safe-area-inset-left)); background: var(--panel); border-bottom: 1px solid var(--border);
   }
   header .title { font-weight: 700; margin-right: 8px; }
   header .spacer { flex: 1; }
@@ -168,6 +177,7 @@
     <button id="nextDay" title="Next day" aria-label="Next day">&#8250;</button>
     <button id="today">Today</button>
     <span class="spacer"></span>
+    <button id="installBtn" class="hidden" title="Install as an app on this device">Install app</button>
     <button id="importBtn" title="Import Google Timeline history">Import</button>
     <button id="reload" title="Reload">Reload</button>
     <button id="signOut">Sign out</button>
@@ -1313,6 +1323,25 @@ out tags;`;
       $('importFiles').disabled = false;
     }
   });
+
+  // ---------- Installable app (PWA) ----------
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Service worker not registered:', e));
+  }
+  let installPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    if ($('installBtn')) $('installBtn').classList.remove('hidden');
+  });
+  $('installBtn').addEventListener('click', async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    installPrompt = null;
+    $('installBtn').classList.add('hidden');
+  });
+  window.addEventListener('appinstalled', () => { if ($('installBtn')) $('installBtn').classList.add('hidden'); });
 
   if (typeof supabase === 'undefined' || typeof L === 'undefined') {
     document.body.innerHTML = '<div class="screen"><div class="form"><h1>Could not load</h1><p>The map and database libraries could not be downloaded. Check your internet connection and reload.</p></div></div>';
