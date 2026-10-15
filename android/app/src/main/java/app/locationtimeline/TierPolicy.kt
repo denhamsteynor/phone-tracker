@@ -85,6 +85,13 @@ object TierPolicy {
      */
     const val CONFIRM_MS = 2 * 60_000L
 
+    /**
+     * Has the phone really left the place it was settled at? It must be at least 100 m away and further
+     * than its own stated inaccuracy allows for, so indoor GPS drift doesn't count.
+     */
+    fun confirmsMovement(distFromSettledM: Double, accuracy: Float): Boolean =
+        distFromSettledM >= maxOf(100.0, 2.0 * accuracy)
+
     fun shouldGoStill(tier: Tier, lastMovementAt: Long, now: Long, movementConfirmed: Boolean = true): Boolean {
         if (tier == Tier.STILL) return false
         val wait = if (movementConfirmed) tier.stillAfterMs else minOf(CONFIRM_MS, tier.stillAfterMs)

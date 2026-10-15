@@ -82,6 +82,10 @@ class TrackingService : Service() {
     private var movementConfirmed = false
     private var lastLat = Double.NaN
     private var lastLon = Double.NaN
+    /** Last position actually saved; while movement is unconfirmed, new points wait in [pending]. */
+    private var savedLat = Double.NaN
+    private var savedLon = Double.NaN
+    private val pending = ArrayList<BufferedPoint>()
     private var activityPendingIntent: PendingIntent? = null
 
     private val locationCallback = object : LocationCallback() {
@@ -134,7 +138,7 @@ class TrackingService : Service() {
             tierSince = lastMovementAt
             movementConfirmed = false
             prefs.logModeChange("Tracking started (Walking until movement is confirmed)")
-            prefs.lastRecorded()?.let { (lat, lon, _) -> lastLat = lat; lastLon = lon }
+            prefs.lastRecorded()?.let { (lat, lon, _) -> lastLat = lat; lastLon = lon; savedLat = lat; savedLon = lon }
             prefs.tierKey = tier.key
             requestLocationUpdates()
             registerActivityTransitions()
@@ -209,8 +213,18 @@ class TrackingService : Service() {
                 lastMovementAt = now
                 val wasStill = tier == Tier.STILL
                 setTier(TierPolicy.afterMove(tier, speedTier), if (wasStill) "moved ${dist.toInt()} m" else "GPS speed")
-                // Waking from Still on one rough fix still needs confirming; otherwise this is real movement.
-                movementConfirmed = !wasStill
+                // Waking from Still on one rough fix still needs confirming.
+                if (wasStill) movementConfirmed = false
+            }
+            if (!movementConfirmed && tier != Tier.STILL) {
+                // Only real distance from where we were settled (or a trustworthy GPS speed) confirms a trip.
+                val fromSettled = if (savedLat.isNaN()) Double.MAX_VALUE
+                    else TierPolicy.distanceM(savedLat, savedLon, loc.latitude, loc.longitude)
+                if (fast || TierPolicy.confirmsMovement(fromSettled, accuracy)) {
+                    movementConfirmed = true
+                    prefs.logModeChange("Movement confirmed" + if (fromSettled < 1e7) " (${fromSettled.toInt()} m away)" else "")
+                    flushPending()
+                }
             }
             if (moved) record(loc, accuracy)
         }
@@ -218,18 +232,37 @@ class TrackingService : Service() {
     }
 
     private fun record(loc: Location, accuracy: Float) {
-        val time = if (loc.time > 0) loc.time else System.currentTimeMillis()
-        LocalDb.get(this).insert(
-            recordedAt = time,
+        val p = BufferedPoint(
+            id = 0,
+            recordedAt = if (loc.time > 0) loc.time else System.currentTimeMillis(),
             lat = loc.latitude,
             lon = loc.longitude,
             accuracy = if (loc.hasAccuracy()) accuracy else null,
             speed = if (loc.hasSpeed()) loc.speed else null,
             activity = tier.key,
         )
-        lastLat = loc.latitude
-        lastLon = loc.longitude
-        prefs.saveLastRecorded(loc.latitude, loc.longitude, time)
+        lastLat = p.lat
+        lastLon = p.lon
+        // Until we know we've really left, hold points back: if it was only drift, they're thrown away.
+        if (tier != Tier.STILL && !movementConfirmed && !savedLat.isNaN()) pending += p else save(p)
+    }
+
+    private fun save(p: BufferedPoint) {
+        LocalDb.get(this).insert(p.recordedAt, p.lat, p.lon, p.accuracy, p.speed, p.activity)
+        savedLat = p.lat
+        savedLon = p.lon
+        prefs.saveLastRecorded(p.lat, p.lon, p.recordedAt)
+    }
+
+    private fun flushPending() {
+        pending.forEach { save(it) }
+        pending.clear()
+    }
+
+    /** Movement wasn't real (e.g. GPS drift indoors): forget the held-back points. */
+    private fun discardPending() {
+        pending.clear()
+        if (!savedLat.isNaN()) { lastLat = savedLat; lastLon = savedLon }
     }
 
     /** Adds the time since the last check to today's total for the current mode. */
@@ -261,6 +294,7 @@ class TrackingService : Service() {
     private fun setTier(newTier: Tier, reason: String) {
         if (newTier == tier) return
         prefs.logModeChange("${tier.label} → ${newTier.label} (${reason})")
+        if (newTier == Tier.STILL && !movementConfirmed) discardPending()
         Log.i(TAG, "Mode ${tier.label} -> ${newTier.label}")
         accountModeTime()
         tier = newTier

@@ -90,6 +90,14 @@ class TierPolicyTest {
     }
 
     @Test
+    fun movementConfirmation() {
+        assertFalse("drift inside a restaurant", TierPolicy.confirmsMovement(80.0, 20f))
+        assertFalse("rough fix", TierPolicy.confirmsMovement(150.0, 90f))
+        assertTrue(TierPolicy.confirmsMovement(100.0, 10f))
+        assertTrue(TierPolicy.confirmsMovement(200.0, 90f))
+    }
+
+    @Test
     fun haversine() {
         assertEquals(0.0, TierPolicy.distanceM(51.5, -0.12, 51.5, -0.12), 1e-9)
         // One degree of latitude is ~111.2 km.

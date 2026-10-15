@@ -422,21 +422,81 @@
   function buildTimeline(pts, dayStart, dayEnd) {
     const now = Date.now();
     const endCap = Math.min(dayEnd.getTime(), now);
-    const stays = [];
+    // For finding stays only: a reading that's a stray compared with its neighbours (up to 3 either
+    // side, within 10 min) is pulled back to their median. Wild indoor readings then can't break a stay.
+    const median = (a) => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+    const sm = pts.map((p, i) => {
+      const lats = [], lons = [];
+      for (let k = Math.max(0, i - 3); k <= Math.min(pts.length - 1, i + 3); k++) {
+        if (Math.abs(pts[k].t - p.t) > 10 * 60 * 1000) continue;
+        lats.push(pts[k].lat); lons.push(pts[k].lon);
+      }
+      if (lats.length < 5) return p; // too few neighbours to judge
+      const m = { lat: median(lats), lon: median(lons) };
+      return dist(p, m) > Math.max(100, 1.5 * (p.acc || 0)) ? { ...p, ...m } : p;
+    });
+
+    const departureAt = (j) => (j < pts.length ? sm[j].t : endCap);
+    const centreOf = (a, b) => {
+      let lat = 0, lon = 0;
+      for (let k = a; k <= b; k++) { lat += sm[k].lat; lon += sm[k].lon; }
+      return { lat: lat / (b - a + 1), lon: lon / (b - a + 1) };
+    };
+    const makeStay = (a, b) => ({ type: 'stay', from: a, to: b, start: sm[a].t, end: departureAt(b + 1),
+      ...centreOf(a, b), ongoing: b + 1 >= pts.length && endCap === now });
+
+    // 1) Stays: points that stay near the running centre. Indoors, GPS readings drift, so a reading
+    //    still counts as "here" if it's within 150 m plus its own stated inaccuracy.
+    let stays = [];
     let i = 0;
     while (i < pts.length) {
+      let lat = sm[i].lat, lon = sm[i].lon, n = 1;
       let j = i + 1;
-      while (j < pts.length && dist(pts[i], pts[j]) <= STAY_RADIUS_M) j++;
-      const departure = j < pts.length ? pts[j].t : endCap;
-      if (departure - pts[i].t >= STAY_MIN_MS) {
-        let lat = 0, lon = 0;
-        for (let k = i; k < j; k++) { lat += pts[k].lat; lon += pts[k].lon; }
-        stays.push({ type: 'stay', from: i, to: j - 1, start: pts[i].t, end: departure,
-          lat: lat / (j - i), lon: lon / (j - i), ongoing: j >= pts.length && endCap === now });
-        i = j;
-      } else {
-        i++;
+      while (j < pts.length) {
+        const c = { lat: lat / n, lon: lon / n };
+        if (dist(c, sm[j]) > STAY_RADIUS_M + Math.min(sm[j].acc || 0, 150)) break;
+        lat += sm[j].lat; lon += sm[j].lon; n++; j++;
       }
+      if (departureAt(j) - sm[i].t >= STAY_MIN_MS) { stays.push(makeStay(i, j - 1)); i = j; }
+      else i++;
+    }
+
+    // 2) "Loitering": a stretch of at least 10 min that never strays more than 300 m from its own centre
+    //    is a stay with GPS drift, not a walk (e.g. hours in a restaurant with readings bouncing around).
+    const LOITER_RADIUS_M = 300;
+    const loiterStays = [];
+    let prevTo = -1;
+    for (const s of [...stays, { from: pts.length }]) {
+      const a = prevTo + 1, b = s.from - 1; // points strictly between two stays
+      if (b >= a && departureAt(b + 1) - sm[a].t >= STAY_MIN_MS) {
+        const c = centreOf(a, b);
+        let fits = true;
+        for (let k = a; k <= b && fits; k++) fits = dist(c, sm[k]) <= LOITER_RADIUS_M;
+        if (fits) loiterStays.push(makeStay(a, b));
+      }
+      if (s.to != null) prevTo = s.to;
+    }
+    stays = [...stays, ...loiterStays].sort((x, y) => x.from - y.from);
+
+    // 3) Join stays at the same place split by a short wander (a drifted reading, or popping out briefly).
+    const MERGE_GAP_MS = 20 * 60 * 1000;
+    for (let k = stays.length - 1; k > 0; k--) {
+      const s1 = stays[k - 1], s2 = stays[k];
+      if (s2.start - s1.end > MERGE_GAP_MS || dist(s1, s2) > LOITER_RADIUS_M) continue;
+      // Readings in between must stay fairly close, unless the gap is so short (≤10 min) that a real
+      // trip away and back is very unlikely, in which case wild readings are just drift.
+      let near = s2.start - s1.end <= 10 * 60 * 1000;
+      if (!near) {
+        near = true;
+        for (let m = s1.to + 1; m < s2.from && near; m++) near = dist(s1, sm[m]) <= 2 * LOITER_RADIUS_M;
+      }
+      if (!near) continue;
+      const merged = makeStay(s1.from, s2.to);
+      // Centre from the settled readings only, not the wandering ones in between.
+      const n1 = s1.to - s1.from + 1, n2 = s2.to - s2.from + 1;
+      merged.lat = (s1.lat * n1 + s2.lat * n2) / (n1 + n2);
+      merged.lon = (s1.lon * n1 + s2.lon * n2) / (n1 + n2);
+      stays.splice(k - 1, 2, merged);
     }
 
     const entries = [];
@@ -453,11 +513,15 @@
         if (last && last.mode === m) { last.to = k; last.distance += d; }
         else legs.push({ mode: m, from: k - 1, to: k, distance: d });
       }
-      // Fold short legs into a neighbour so GPS noise doesn't create tiny trips.
+      // Fold short legs (under 250 m, or under a minute) into a neighbour so GPS noise doesn't create tiny trips.
+      const legMs = (l) => pts[l.to].t - pts[l.from].t;
       for (let changed = true; changed && legs.length > 1;) {
         changed = false;
-        let idx = -1, min = MIN_LEG_M;
-        legs.forEach((l, n) => { if (l.distance < min) { min = l.distance; idx = n; } });
+        let idx = -1, min = Infinity;
+        legs.forEach((l, n) => {
+          const short = l.distance < MIN_LEG_M || legMs(l) < 60 * 1000;
+          if (short && l.distance < min) { min = l.distance; idx = n; }
+        });
         if (idx < 0) break;
         const l = legs[idx];
         const into = idx > 0 ? legs[idx - 1] : legs[idx + 1];
